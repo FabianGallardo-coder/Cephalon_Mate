@@ -1,0 +1,17 @@
+# Cephalon Mate — configuración
+# Editable; si borras este archivo se regenera con los defaults.
+
+# Personalidad activa: ordis | suda | simaris
+personality = "ordis"
+
+# Trato al usuario: Tenno | Viajero | Operador
+user_address = "Tenno"
+
+# Modelo base Ollama (las personalidades se derivan de este)
+model = "qwen2.5:3b"
+
+# Servidor Ollama (en este PC el puerto 11434 está bloqueado por Hyper-V → 12434)
+ollama_host = "http://127.0.0.1:12434"
+
+# Cada cuántos segundos se refresca el worldstate en background
+worldstate_refresh_secs = 60

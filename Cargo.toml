@@ -1,0 +1,21 @@
+[package]
+name = "cehalon-mate"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Asistente de Warframe con IA local (Ollama) en Rust"
+license = "MIT"
+repository = "https://github.com/FabianGallardo-coder/Cephalon_Mate"
+readme = "README.md"
+
+[dependencies]
+chrono = { version = "0.4.45", features = ["serde"] }
+crossterm = "0.29.0"
+ratatui = "0.30.2"
+reqwest = { version = "0.13.5", features = ["blocking", "json"] }
+rodio = "0.19.0"
+rusqlite = { version = "0.43.0", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+toml = "1.2.3"
+ureq = { version = "3.5.2", features = ["json"] }

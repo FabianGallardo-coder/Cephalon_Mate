@@ -1,0 +1,28 @@
+# Build
+/target
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Runtime local (datos, DB, assets)
+/data
+/assets
+*.db
+*.db-journal
+
+# Fansite Kit (pesado, descargado a mano)
+/Warframe Fansite Kit
+/Warframe Fansite Kit.zip
+/Audio
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.log
+*.tmp
+*.bak
