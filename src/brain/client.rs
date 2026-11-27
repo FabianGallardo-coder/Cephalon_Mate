@@ -188,6 +188,48 @@ impl OllamaClient {
             _ => self.conn_error(e),
         }
     }
+
+    /// Crea un modelo en Ollama desde un Modelfile (POST /api/create).
+    /// Usado por `/personality` y la GUI para crear `cehalon-<name>` on-demand.
+    pub fn create_model(&self, name: &str, modelfile: &str) -> Result<(), String> {
+        let body = serde_json::json!({
+            "name": name,
+            "modelfile": modelfile
+        });
+        let resp = self
+            .chat_agent
+            .post(format!("{}/api/create", self.host))
+            .send_json(&body)
+            .map_err(|e| self.conn_error(e))?;
+
+        // /api/create devuelve streaming NDJSON; consumirlo hasta done
+        let mut reader = BufReader::new(resp.into_body().into_reader());
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = reader.read_line(&mut line).map_err(|e| {
+                format!("leyendo respuesta create: {e}")
+            })?;
+            if n == 0 {
+                break; // EOF
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let value: serde_json::Value = match serde_json::from_str(trimmed) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if let Some(err) = value.get("error").and_then(|e| e.as_str()) {
+                return Err(format!("Ollama create error: {err}"));
+            }
+            if value.get("status").and_then(|s| s.as_str()) == Some("success") {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -58,6 +58,21 @@ impl Personality {
             Personality::Suda | Personality::Simaris => Npc::Lotus,
         }
     }
+
+    /// Nombre para mostrar (Display).
+    pub fn name(&self) -> &'static str {
+        match self {
+            Personality::Ordis => "Ordis",
+            Personality::Suda => "Suda",
+            Personality::Simaris => "Simaris",
+        }
+    }
+}
+
+impl std::fmt::Display for Personality {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
 }
 
 /// NPC del Fansite Kit con su carpeta de sonidos.

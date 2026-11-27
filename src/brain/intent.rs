@@ -8,6 +8,8 @@
 //! encuentra ningún item conocido en la BD, no se fuerza nada y el modelo
 //! decide con sus propias tools.
 
+use crate::brain::chat::ChatMessage;
+use crate::brain::items;
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::json;
 
@@ -390,5 +392,62 @@ mod tests {
         assert!(asks_game_data("¿Qué mods van en Nova?"));
         assert!(!asks_game_data("hola Tenno"));
         assert!(!asks_game_data("¿qué tal estás?"));
+    }
+
+    #[test]
+    fn prefetch_intents_works() {
+        let conn = db();
+        items::set_items_db(conn);
+        let msgs = vec![ChatMessage::user("¿Dónde dropea Serration?")];
+        let intents = prefetch_intents(&msgs);
+        assert!(!intents.is_empty());
+        assert_eq!(intents[0].tool, "donde_encontrar");
+    }
+}
+
+/// Detecta las intenciones del último mensaje del usuario (versión pública para GUI).
+///
+/// Devuelve las tools a ejecutar si la pregunta es claramente sobre datos del
+/// juego y hay items conocidos en la BD.
+pub fn prefetch_intents(messages: &[ChatMessage]) -> Vec<Intent> {
+    let Some(last_user) = messages.iter().rev().find(|m| m.role == "user") else {
+        return Vec::new();
+    };
+    let Some(arc) = items::get_items_db() else {
+        return Vec::new();
+    };
+    let intents = {
+        let conn = match arc.lock() {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        detect_all(&conn, &last_user.content)
+    };
+    intents
+}
+
+/// Detecta items mencionados por el usuario que **no** están en la BD (versión pública para GUI).
+///
+/// Sirve para advertir al modelo de que ese item no existe en el dataset
+/// (y que no debe inventar datos sobre él).
+pub fn prefetch_unknowns(messages: &[ChatMessage]) -> Vec<String> {
+    let Some(last_user) = messages.iter().rev().find(|m| m.role == "user") else {
+        return Vec::new();
+    };
+    let Some(arc) = items::get_items_db() else {
+        return Vec::new();
+    };
+    let unknowns = {
+        let conn = match arc.lock() {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        unknown_items(&conn, &last_user.content)
+    };
+    // Sólo tiene sentido avisar si la pregunta pide datos del juego.
+    if asks_game_data(&last_user.content) {
+        unknowns.into_iter().take(3).collect()
+    } else {
+        Vec::new()
     }
 }

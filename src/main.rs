@@ -11,6 +11,9 @@ mod logo;
 mod qa;
 mod ui;
 
+#[cfg(feature = "gui")]
+mod gui;
+
 use std::io;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -106,6 +109,18 @@ fn main() -> io::Result<()> {
         return run_ask_cli(&question, model_override.as_deref());
     }
 
+    // GUI mode (feature-gated)
+    #[cfg(feature = "gui")]
+    if args.iter().any(|a| a == "--gui") {
+        let cfg = config::Config::load(Path::new("config.toml")).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("no se pudo cargar/crear config.toml: {e}"),
+            )
+        })?;
+        return gui::run_gui(cfg).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()));
+    }
+
     let cfg = config::Config::load(Path::new("config.toml")).map_err(|e| {
         io::Error::new(
             io::ErrorKind::Other,
@@ -167,6 +182,8 @@ fn print_help() {
     println!("  --tool <nombre> [json]  Ejecuta una tool y muestra su salida");
     println!("  --ask <pregunta>         Pregunta al modelo (headless, sin TUI)");
     println!("  --model <nombre>         Modelo de Ollama a usar con --ask");
+    #[cfg(feature = "gui")]
+    println!("  --gui        Lanza la interfaz gráfica (egui) en lugar de TUI");
     println!("  --help       Muestra esta ayuda");
 }
 
@@ -720,7 +737,7 @@ fn has_critical_event(ws: &WorldState) -> bool {
     ws.fissures.iter().any(|f| f.is_hard)
 }
 
-/// Traduce un mensaje del thread de WFCD a la UI.
+/// Traduce un mensaje del thread de WFCD a la UI (TUI).
 fn apply_wfcd_msg(state: &mut UiState, msg: &WfcdMsg, audio_player: &AudioPlayer) {
     match msg {
         WfcdMsg::Started => {
@@ -753,6 +770,49 @@ fn apply_wfcd_msg(state: &mut UiState, msg: &WfcdMsg, audio_player: &AudioPlayer
                 "❌ Error sincronizando WFCD: {msg}"
             )));
             audio_player.play(AudioEvent::Error);
+        }
+    }
+}
+
+/// Traduce un mensaje del thread de WFCD a la UI (GUI - SharedState).
+#[cfg(feature = "gui")]
+pub fn apply_wfcd_msg_gui(
+    state: &crate::gui::SharedState,
+    msg: &WfcdMsg,
+    audio_player: Option<&AudioPlayer>,
+) {
+    match msg {
+        WfcdMsg::Started => {
+            state.messages.lock().unwrap().push(ChatEntry::cephalon(
+                String::from("📦 Sincronizando base de datos de items con WFCD…"),
+            ));
+        }
+        WfcdMsg::Progress { percent: _ } => {
+            // El progreso se muestra en HUD via state (no implementado en SharedState aún)
+        }
+        WfcdMsg::Done { success: true } => {
+            state.messages.lock().unwrap().push(ChatEntry::cephalon(
+                String::from("✅ Base de datos de items (WFCD) actualizada."),
+            ));
+            if let Some(a) = audio_player {
+                a.play(AudioEvent::ToolExecuted { success: true });
+            }
+        }
+        WfcdMsg::Done { success: false } => {
+            state.messages.lock().unwrap().push(ChatEntry::error(
+                String::from("❌ La sincronización WFCD no se completó."),
+            ));
+            if let Some(a) = audio_player {
+                a.play(AudioEvent::Error);
+            }
+        }
+        WfcdMsg::Error { msg } => {
+            state.messages.lock().unwrap().push(ChatEntry::error(format!(
+                "❌ Error sincronizando WFCD: {msg}"
+            )));
+            if let Some(a) = audio_player {
+                a.play(AudioEvent::Error);
+            }
         }
     }
 }
@@ -1143,8 +1203,8 @@ fn send_chat(
             .find(|m| m.role == "user")
             .map(|m| m.content.clone())
             .unwrap_or_default();
-        let intents = prefetch_intents(&messages);
-        let unknowns = prefetch_unknowns(&messages);
+        let intents = brain::intent::prefetch_intents(&messages);
+        let unknowns = brain::intent::prefetch_unknowns(&messages);
         let asks_game_data = brain::intent::asks_game_data(&last_user_text);
 
         let mut block = String::new();
@@ -1244,53 +1304,7 @@ fn send_chat(
     rx
 }
 
-/// Detecta las intenciones del último mensaje del usuario.
-///
-/// Devuelve las tools a ejecutar si la pregunta es claramente sobre datos del
-/// juego y hay items conocidos en la BD.
-fn prefetch_intents(messages: &[ChatMessage]) -> Vec<brain::intent::Intent> {
-    let Some(last_user) = messages.iter().rev().find(|m| m.role == "user") else {
-        return Vec::new();
-    };
-    let Some(arc) = brain::items::get_items_db() else {
-        return Vec::new();
-    };
-    // El lock se suelta antes de ejecutar las tools (que vuelven a tomarlo).
-    let intents = {
-        let conn = match arc.lock() {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
-        };
-        brain::intent::detect_all(&conn, &last_user.content)
-    };
-    intents
-}
 
-/// Detecta items mencionados por el usuario que **no** están en la BD.
-///
-/// Sirve para advertir al modelo de que ese item no existe en el dataset
-/// (y que no debe inventar datos sobre él).
-fn prefetch_unknowns(messages: &[ChatMessage]) -> Vec<String> {
-    let Some(last_user) = messages.iter().rev().find(|m| m.role == "user") else {
-        return Vec::new();
-    };
-    let Some(arc) = brain::items::get_items_db() else {
-        return Vec::new();
-    };
-    let unknowns = {
-        let conn = match arc.lock() {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
-        };
-        brain::intent::unknown_items(&conn, &last_user.content)
-    };
-    // Sólo tiene sentido avisar si la pregunta pide datos del juego.
-    if brain::intent::asks_game_data(&last_user.content) {
-        unknowns.into_iter().take(3).collect()
-    } else {
-        Vec::new()
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1332,3 +1346,7 @@ mod tests {
         assert!(v.get("_error").is_some());
     }
 }
+
+
+
+

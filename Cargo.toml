@@ -8,6 +8,10 @@ license = "MIT"
 repository = "https://github.com/FabianGallardo-coder/Cephalon_Mate"
 readme = "README.md"
 
+[features]
+default = []  # TUI only por defecto
+gui = ["eframe", "egui", "egui_extras", "image"]
+
 [dependencies]
 chrono = { version = "0.4.45", features = ["serde"] }
 crossterm = "0.29.0"
@@ -19,3 +23,10 @@ serde_json = "1.0.154"
 toml = "1.2.3"
 ureq = { version = "3.5.2", features = ["json"] }
 urlencoding = "2.1"
+crossbeam-channel = "0.5"
+
+# GUI (egui/eframe) - optional, solo si se compila con feature "gui"
+eframe = { version = "0.30", features = ["default", "accesskit", "persistence"], optional = true }
+egui = { version = "0.30", optional = true }
+egui_extras = { version = "0.30", optional = true }
+image = { version = "0.25", features = ["png", "jpeg", "dds"], optional = true }
