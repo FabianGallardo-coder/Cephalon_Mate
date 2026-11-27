@@ -298,6 +298,24 @@ https://digitalextremesltd.app.box.com/s/vh2u41yhdlgp3girffucbynadoi33173
 El kit no se distribuye con el repo. Sus audios son de Digital Extremes y se usan
 para uso de fansite/comunidad.
 
+## Wiki
+
+Documentación extendida en **[GitHub Wiki](https://github.com/FabianGallardo-coder/Cephalon_Mate/wiki)**:
+
+| Página | Descripción |
+|--------|-------------|
+| [Home](https://github.com/FabianGallardo-coder/Cephalon_Mate/wiki) | Inicio rápido, comandos, personalidades, QA |
+| [Arquitectura](https://github.com/FabianGallardo-coder/Cephalon_Mate/wiki/Arquitectura) | Capas, flujo, decisiones técnicas, threads, BD |
+| [Estructura del Repo](https://github.com/FabianGallardo-coder/Cephalon_Mate/wiki/Estructura-del-Repo) | Árbol directorios, módulos, config, CI |
+| [Datos y Repositorios](https://github.com/FabianGallardo-coder/Cephalon_Mate/wiki/Datos-y-Repositorios) | APIs, WFCD 26 categorías, schema BD, sync |
+| [Personalidades](https://github.com/FabianGallardo-coder/Cephalon_Mate/wiki/Personalidades) | Ordis/Suda/Simaris, Modelfiles, audio |
+| [Modelos Ollama](https://github.com/FabianGallardo-coder/Cephalon_Mate/wiki/Modelos-Ollama) | Modelos base, personalidades, puerto 12434 |
+| [Fansite Kit Audio](https://github.com/FabianGallardo-coder/Cephalon_Mate/wiki/Fansite-Kit-Audio) | Catálogo 482 audios, mapeo NPC/evento |
+| [Comandos](https://github.com/FabianGallardo-coder/Cephalon_Mate/wiki/Comandos) | TUI, CLI flags, atajos, ejemplos |
+| [QA y Testing](https://github.com/FabianGallardo-coder/Cephalon_Mate/wiki/QA-y-Testing) | 27 checks, E2E, CI, semántica checks |
+| [Desarrollo](https://github.com/FabianGallardo-coder/Cephalon_Mate/wiki/Desarrollo) | Setup, debug, release, CI, contribución |
+| [Créditos](https://github.com/FabianGallardo-coder/Cephalon_Mate/wiki/Creditos) | Atribución DE, WFCD, warframe.market, Ollama |
+
 ## Licencia
 
 MIT — ver [LICENSE](LICENSE). Los audios del Fansite Kit **no** están cubiertos por
