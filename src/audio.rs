@@ -221,6 +221,15 @@ impl AudioPlayer {
         })
     }
 
+    /// Crea un reproductor "nulo" que no reproduce nada (para sistemas sin audio).
+    pub fn null() -> Self {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        Self {
+            sender: std::sync::Arc::new(tx),
+            handle: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
     /// Envía un evento de audio (no bloquea).
     pub fn play(&self, event: AudioEvent) {
         let _ = self.sender.send(event);
@@ -340,8 +349,12 @@ impl AudioPlayer {
 }
 
 /// Inicializa el reproductor usando la carpeta `Audio/` resuelta en runtime.
-pub fn init_audio() -> std::io::Result<AudioPlayer> {
-    AudioPlayer::new(audio_dir()).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+/// Si falla (p. ej. sin dispositivo de audio), devuelve un player nulo que no reproduce nada.
+pub fn init_audio() -> AudioPlayer {
+    AudioPlayer::new(audio_dir()).unwrap_or_else(|e| {
+        eprintln!("[audio] Desactivado: {e}");
+        AudioPlayer::null()
+    })
 }
 
 #[cfg(test)]

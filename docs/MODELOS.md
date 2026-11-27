@@ -23,7 +23,7 @@ Por qué:
 
 ## Reglas
 
-1. El modelo base es **configurable** en `config.toml → model`; el TUI detecta si está instalado y sugiere el más cercano si falta (`/model` para cambiar en vivo).
+1. El modelo base es **configurable** en `config.toml → model`; `/model` sin argumentos lista los modelos instalados y con argumento cambia en vivo (rechaza con la lista de disponibles si el modelo pedido no está instalado).
 2. Las personalidades (Modelfiles) se **derivan** del modelo base — no duplican pesos, solo system prompt + parámetros.
 3. `num_ctx = 4096` por default (suficiente para tools + historial corto; subirlo dispara el uso de RAM).
 4. `temperature`: 0.7 para Ordis/Suda, 0.5 para Simaris (más severo y literal).

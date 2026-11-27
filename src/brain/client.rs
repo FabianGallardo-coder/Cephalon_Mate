@@ -138,13 +138,22 @@ impl OllamaClient {
                 self.chat_error(ureq::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))
             })?;
             if n == 0 {
-                return Ok(calls);
+                return Err("stream de Ollama terminado sin la señal `done`".into());
             }
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
-            let parsed: crate::brain::chat::ChatResponse = match serde_json::from_str(trimmed) {
+            // Primero comprobar si es un objeto de error de Ollama
+            let value: serde_json::Value = match serde_json::from_str(trimmed) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if let Some(err) = value.get("error").and_then(|e| e.as_str()) {
+                return Err(err.to_string());
+            }
+            // Luego parsear como respuesta de chat normal
+            let parsed: crate::brain::chat::ChatResponse = match serde_json::from_value(value) {
                 Ok(p) => p,
                 Err(_) => continue,
             };

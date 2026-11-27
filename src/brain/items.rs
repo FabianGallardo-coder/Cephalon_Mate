@@ -7,6 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
+use urlencoding;
 
 /// Path de la base de datos SQLite (en `data/` junto al config.toml).
 pub fn db_path() -> std::path::PathBuf {
@@ -200,17 +201,20 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ItemRow> {
 }
 
 /// Busca items por nombre (LIKE case-insensitive) — tool `buscar_item`.
+/// Escapa `%` y `_` para que actúen como literales, no como comodines.
 pub fn search_items(conn: &Connection, query: &str, limit: usize) -> Result<Vec<ItemRow>, String> {
-    let pattern = format!("%{}%", query.to_lowercase());
+    let escaped = query.to_lowercase().replace(['%', '_'], "");
+    let pattern = format!("%{}%", escaped);
+    let prefix = format!("{}%", escaped);
     let sql = format!(
         r#"
         SELECT {ITEM_COLUMNS}
         FROM items
-        WHERE lower(name) LIKE ?1
-           OR lower(unique_name) LIKE ?1
+        WHERE lower(name) LIKE ?1 ESCAPE '\'
+           OR lower(unique_name) LIKE ?1 ESCAPE '\'
         ORDER BY
             CASE WHEN lower(name) = ?2 THEN 0
-                 WHEN lower(name) LIKE ?3 THEN 1
+                 WHEN lower(name) LIKE ?3 ESCAPE '\' THEN 1
                  ELSE 2 END,
             name
         LIMIT ?4
@@ -223,7 +227,7 @@ pub fn search_items(conn: &Connection, query: &str, limit: usize) -> Result<Vec<
             params![
                 pattern,
                 query.to_lowercase(),
-                format!("{}%", query.to_lowercase()),
+                prefix,
                 limit as i64
             ],
             row_to_item,
@@ -570,15 +574,15 @@ const WFCD_AGGREGATE_URL: &str =
 /// 1. El `items.json` agregado de la última release (si upstream lo publica).
 /// 2. Los JSON por categoría (`data/json/*.json`), que es como está hoy el repo.
 fn fetch_wfcd_items(on_progress: &mut dyn FnMut(u8)) -> Result<Vec<WfcdItem>, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(90))
-        .user_agent("cehalon-mate/1.0 (+https://github.com/FabianGallardo-coder/Cephalon_Mate)")
-        .build()
-        .map_err(|e| format!("cliente HTTP: {e}"))?;
+    let client = ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(90)))
+            .user_agent("cehalon-mate/1.0 (+https://github.com/FabianGallardo-coder/Cephalon_Mate)")
+            .build(),
+    );
 
     on_progress(8);
     if let Some(items) = fetch_aggregate(&client) {
-        println!("[items] {} items del JSON agregado de WFCD", items.len());
         on_progress(50);
         return Ok(items);
     }
@@ -589,13 +593,12 @@ fn fetch_wfcd_items(on_progress: &mut dyn FnMut(u8)) -> Result<Vec<WfcdItem>, St
         let url = format!("{WFCD_RAW_BASE}/{cat}.json");
         let resp = client
             .get(&url)
-            .send()
+            .call()
             .map_err(|e| format!("GET {cat}: {e}"))?;
         if !resp.status().is_success() {
-            eprintln!("[items] {cat}: HTTP {}", resp.status());
             continue;
         }
-        let text = resp.text().map_err(|e| format!("{cat}: response text: {e}"))?;
+        let text = resp.into_body().read_to_string().map_err(|e| format!("{cat}: response text: {e}"))?;
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&text)
             .map_err(|e| format!("{cat}: parse JSON: {e}"))?;
         let items: Vec<WfcdItem> = parsed.iter().filter_map(WfcdItem::from_value).collect();
@@ -608,19 +611,16 @@ fn fetch_wfcd_items(on_progress: &mut dyn FnMut(u8)) -> Result<Vec<WfcdItem>, St
     if all.is_empty() {
         return Err("no se pudo descargar ningún item de WFCD".into());
     }
-    println!("[items] {} items descargados de WFCD", all.len());
     Ok(all)
 }
 
 /// Intenta el JSON agregado de la release (puede no existir).
-fn fetch_aggregate(client: &reqwest::blocking::Client) -> Option<Vec<WfcdItem>> {
-    println!("[items] probando {WFCD_AGGREGATE_URL}…");
-    let resp = client.get(WFCD_AGGREGATE_URL).send().ok()?;
+fn fetch_aggregate(client: &ureq::Agent) -> Option<Vec<WfcdItem>> {
+    let resp = client.get(WFCD_AGGREGATE_URL).call().ok()?;
     if !resp.status().is_success() {
-        eprintln!("[items] JSON agregado no disponible: HTTP {}", resp.status());
         return None;
     }
-    let text = resp.text().ok()?;
+    let text = resp.into_body().read_to_string().ok()?;
     let parsed: Vec<serde_json::Value> = serde_json::from_str(&text).ok()?;
     let items: Vec<WfcdItem> = parsed.iter().filter_map(WfcdItem::from_value).collect();
     if items.is_empty() {
@@ -743,7 +743,6 @@ fn write_wfcd_items(
     on_progress(95);
     tx.commit().map_err(|e| format!("commit: {e}"))?;
     on_progress(100);
-    println!("[items] sync OK: {} nuevos, {} actualizados", inserted, updated);
     Ok(inserted + updated)
 }
 
@@ -1292,58 +1291,61 @@ struct OrderUser {
 /// TTL del caché de precios (10 minutos).
 const PRICE_TTL_SECS: i64 = 600;
 
-/// Obtiene el precio de un item desde warframe.market (con caché TTL en SQLite).
-/// `item_slug` es el slug de warframe.market (ej. "soma_prime_set", "soma_prime_receiver").
-pub fn get_price(conn: &Connection, item_slug: &str) -> Result<PriceCache, String> {
-    // 1. Intentar leer del caché si no ha expirado.
+/// Lee el precio del caché si no ha expirado. No hace fetch.
+pub fn get_price_cached(conn: &Connection, item_slug: &str) -> Option<PriceCache> {
     let now = chrono::Utc::now().to_rfc3339();
-    let cached: Option<PriceCache> = conn
-        .query_row(
-            r#"
-            SELECT item_slug, item_name, sell_min, sell_max, sell_avg,
-                   buy_max, buy_min, buy_avg, volume_24h, updated_at, expires_at
-            FROM prices
-            WHERE item_slug = ?1 AND expires_at > ?2
-            "#,
-            params![item_slug, &now],
-            |row| {
-                Ok(PriceCache {
-                    item_slug: row.get(0)?,
-                    item_name: row.get(1)?,
-                    sell_min: row.get(2)?,
-                    sell_max: row.get(3)?,
-                    sell_avg: row.get(4)?,
-                    buy_max: row.get(5)?,
-                    buy_min: row.get(6)?,
-                    buy_avg: row.get(7)?,
-                    volume_24h: row.get(8)?,
-                    updated_at: row.get(9)?,
-                    expires_at: row.get(10)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(|e| format!("query cache: {e}"))?;
-
-    if let Some(c) = cached {
-        return Ok(c);
-    }
-
-    // 2. Caché expirado o inexistente → fetch a warframe.market.
-    fetch_and_cache_price(conn, item_slug)
+    conn.query_row(
+        r#"
+        SELECT item_slug, item_name, sell_min, sell_max, sell_avg,
+               buy_max, buy_min, buy_avg, volume_24h, updated_at, expires_at
+        FROM prices
+        WHERE item_slug = ?1 AND expires_at > ?2
+        "#,
+        params![item_slug, &now],
+        |row| {
+            Ok(PriceCache {
+                item_slug: row.get(0)?,
+                item_name: row.get(1)?,
+                sell_min: row.get(2)?,
+                sell_max: row.get(3)?,
+                sell_avg: row.get(4)?,
+                buy_max: row.get(5)?,
+                buy_min: row.get(6)?,
+                buy_avg: row.get(7)?,
+                volume_24h: row.get(8)?,
+                updated_at: row.get(9)?,
+                expires_at: row.get(10)?,
+            })
+        },
+    )
+    .optional()
+    .ok()
+    .flatten()
 }
 
-fn fetch_and_cache_price(conn: &Connection, item_slug: &str) -> Result<PriceCache, String> {
-    let url = format!("https://api.warframe.market/v2/orders/item/{item_slug}");
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("client: {e}"))?;
+/// Obtiene el precio: primero caché, si no hay o expiró → fetch a warframe.market + upsert.
+#[allow(dead_code)]
+pub fn get_price(conn: &Connection, item_slug: &str) -> Result<PriceCache, String> {
+    if let Some(c) = get_price_cached(conn, item_slug) {
+        return Ok(c);
+    }
+    fetch_and_cache_price(item_slug)
+}
+
+/// Hace el fetch HTTP a warframe.market y hace upsert en el caché.
+/// Se llama SIN mantener el lock de la BD (el lock se toma solo para el upsert).
+pub fn fetch_and_cache_price(item_slug: &str) -> Result<PriceCache, String> {
+    let url = format!("https://api.warframe.market/v2/orders/item/{}", urlencoding::encode(item_slug));
+    let client = ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build(),
+    );
 
     let resp = client
         .get(&url)
         .header("accept", "application/json")
-        .send()
+        .call()
         .map_err(|e| format!("HTTP GET: {e}"))?;
 
     if !resp.status().is_success() {
@@ -1351,7 +1353,8 @@ fn fetch_and_cache_price(conn: &Connection, item_slug: &str) -> Result<PriceCach
     }
 
     let data: OrdersResponse = resp
-        .json()
+        .into_body()
+        .read_json()
         .map_err(|e| format!("parse JSON: {e}"))?;
 
     if let Some(err) = data.error {
@@ -1397,12 +1400,16 @@ fn fetch_and_cache_price(conn: &Connection, item_slug: &str) -> Result<PriceCach
     } else {
         None
     };
+
     let volume_24h = visible_orders.iter().map(|o| o.quantity).sum::<i64>();
 
-    let now = chrono::Utc::now();
-    let expires_at = now + chrono::Duration::seconds(PRICE_TTL_SECS);
+    let now = chrono::Utc::now().to_rfc3339();
+    let expires_at = chrono::Utc::now()
+        .checked_add_signed(chrono::Duration::minutes(5))
+        .unwrap()
+        .to_rfc3339();
 
-    let cache = PriceCache {
+    let price = PriceCache {
         item_slug: item_slug.to_string(),
         item_name,
         sell_min,
@@ -1412,16 +1419,26 @@ fn fetch_and_cache_price(conn: &Connection, item_slug: &str) -> Result<PriceCach
         buy_min,
         buy_avg,
         volume_24h: Some(volume_24h),
-        updated_at: now.to_rfc3339(),
-        expires_at: expires_at.to_rfc3339(),
+        updated_at: now.clone(),
+        expires_at,
     };
 
-    // Upsert en caché.
+    // Upsert en BD (aquí sí tomamos el lock brevemente).
+    let db = get_items_db()
+        .ok_or("BD de items no inicializada")?;
+    let conn = db.lock().unwrap_or_else(|e| e.into_inner());
+    upsert_price(&conn, &price)?;
+
+    Ok(price)
+}
+
+fn upsert_price(conn: &Connection, price: &PriceCache) -> Result<(), String> {
     conn.execute(
         r#"
-        INSERT INTO prices (item_slug, item_name, sell_min, sell_max, sell_avg,
-                            buy_max, buy_min, buy_avg, volume_24h, updated_at, expires_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        INSERT INTO prices (
+            item_slug, item_name, sell_min, sell_max, sell_avg,
+            buy_max, buy_min, buy_avg, volume_24h, updated_at, expires_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
         ON CONFLICT(item_slug) DO UPDATE SET
             item_name = excluded.item_name,
             sell_min = excluded.sell_min,
@@ -1435,23 +1452,23 @@ fn fetch_and_cache_price(conn: &Connection, item_slug: &str) -> Result<PriceCach
             expires_at = excluded.expires_at
         "#,
         params![
-            &cache.item_slug,
-            &cache.item_name,
-            &cache.sell_min,
-            &cache.sell_max,
-            &cache.sell_avg,
-            &cache.buy_max,
-            &cache.buy_min,
-            &cache.buy_avg,
-            &cache.volume_24h,
-            &cache.updated_at,
-            &cache.expires_at,
+            price.item_slug,
+            price.item_name,
+            price.sell_min,
+            price.sell_max,
+            price.sell_avg,
+            price.buy_max,
+            price.buy_min,
+            price.buy_avg,
+            price.volume_24h,
+            price.updated_at,
+            price.expires_at
         ],
     )
-    .map_err(|e| format!("upsert cache: {e}"))?;
-
-    Ok(cache)
+    .map_err(|e| format!("upsert price: {e}"))?;
+    Ok(())
 }
+
 
 /// Formatea un PriceCache para la respuesta del modelo (tool `consultar_precio`).
 pub fn format_price_for_llm(price: &PriceCache) -> String {

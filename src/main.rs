@@ -116,18 +116,6 @@ fn main() -> io::Result<()> {
     let ollama = OllamaClient::new(&cfg.ollama_host);
     let ollama_ok = ollama.health().is_ok();
 
-    // Modelo de chat: la personalidad crea `cehalon-<nombre>`; si no existe,
-    // cae al modelo base del config.
-    let chat_model = if ollama
-        .list_models()
-        .map(|ms| ms.iter().any(|m| m.starts_with(&format!("cehalon-{}:", cfg.personality))))
-        .unwrap_or(false)
-    {
-        format!("cehalon-{}", cfg.personality)
-    } else {
-        cfg.model.clone()
-    };
-
     // BD de items: la sincronización WFCD va en background (no bloquea el
     // arranque de la UI). Solo es "urgente" si la BD está vacía.
     let items_db = init_db().map_err(|e| {
@@ -155,7 +143,6 @@ fn main() -> io::Result<()> {
     let result = run_tui(
         state,
         &ollama,
-        &chat_model,
         cfg.worldstate_refresh_secs,
         needs_sync,
     );
@@ -199,7 +186,7 @@ fn run_ask_cli(question: &str, model_override: Option<&str>) -> io::Result<()> {
     if ollama.health().is_err() {
         eprintln!("[ask] Ollama no responde en {}", cfg.ollama_host);
     }
-    let chat_model = match model_override {
+    let model = match model_override {
         Some(m) => m.to_string(),
         None if ollama
             .list_models()
@@ -226,7 +213,7 @@ fn run_ask_cli(question: &str, model_override: Option<&str>) -> io::Result<()> {
     let rx = send_chat(
         &mut state,
         &ollama,
-        &chat_model,
+        &model,
         question.to_string(),
         None,
     );
@@ -437,18 +424,11 @@ fn render_to_string(state: &mut UiState, w: u16, h: u16) -> String {
 fn run_tui(
     state: UiState,
     ollama: &OllamaClient,
-    chat_model: &str,
     refresh_secs: u64,
     needs_sync: bool,
 ) -> io::Result<()> {
-    // Inicializar audio player (P13).
-    let mut audio_player = init_audio().map_err(|e| {
-        eprintln!("[audio] No se pudo inicializar: {e}");
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("Audio player initialization failed: {e}"),
-        )
-    })?;
+    // Inicializar audio player (P13). Si falla, init_audio devuelve un player nulo.
+    let mut audio_player = init_audio();
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -470,7 +450,6 @@ fn run_tui(
         &mut terminal,
         state,
         ollama,
-        chat_model,
         ws_rx,
         wfcd_rx,
         audio_player.clone(),
@@ -504,7 +483,7 @@ pub fn spawn_wfcd_sync(tx: Sender<WfcdMsg>) -> thread::JoinHandle<()> {
                 }
                 Err(e) => {
                     last_err = e;
-                    eprintln!("[wfcd] intento {attempt}/{WFCD_MAX_ATTEMPTS} falló: {last_err}");
+                    // No eprintln! en background thread (corrompe TUI en raw mode)
                     if attempt < WFCD_MAX_ATTEMPTS {
                         let backoff = Duration::from_millis(
                             (WFCD_BACKOFF_BASE_MS * 2u32.pow(attempt - 1)) as u64,
@@ -523,7 +502,6 @@ fn event_loop(
     terminal: &mut Term,
     mut state: UiState,
     ollama: &OllamaClient,
-    chat_model: &str,
     ws_rx: Receiver<WorldState>,
     wfcd_rx: Receiver<WfcdMsg>,
     audio_player: AudioPlayer,
@@ -640,7 +618,11 @@ fn event_loop(
                         break;
                     }
                     Ok(StreamMsg::Error(e)) => {
-                        state.pending.clear();
+                        // Consolidar lo que ya se mostró en lugar de borrarlo.
+                        let text = std::mem::take(&mut state.pending);
+                        if !text.trim().is_empty() {
+                            state.messages.push(ChatEntry::cephalon(text));
+                        }
                         state.messages.push(ChatEntry::error(e));
                         state.thinking = false;
                         stream_rx = None;
@@ -655,6 +637,10 @@ fn event_loop(
         }
 
         terminal.draw(|f| ui::render(&mut state, f))?;
+
+        if state.quit {
+            return Ok(());
+        }
 
         if event::poll(TICK)? {
             busy = true;
@@ -696,7 +682,6 @@ fn event_loop(
                                     &mut state,
                                     &msg,
                                     ollama,
-                                    chat_model,
                                     &audio_player,
                                     &ws_manual_tx,
                                     &sync_tx,
@@ -704,10 +689,11 @@ fn event_loop(
                                 continue;
                             }
 
+                            let model = effective_model(&state, ollama);
                             stream_rx = Some(send_chat(
                                 &mut state,
                                 ollama,
-                                chat_model,
+                                &model,
                                 msg,
                                 Some(&audio_player),
                             ));
@@ -741,27 +727,28 @@ fn apply_wfcd_msg(state: &mut UiState, msg: &WfcdMsg, audio_player: &AudioPlayer
             state.messages.push(ChatEntry::cephalon(
                 "📦 Sincronizando base de datos de items con WFCD…",
             ));
+            state.wfcd_progress = Some(0);
         }
         WfcdMsg::Progress { percent } => {
-            // El progreso se ve en la barra del input; no ensuciamos el chat.
-            state.tools_used = vec![format!("wfcd {percent}%")];
+            // El progreso se ve en la barra del input; no pisamos tools_used.
+            state.wfcd_progress = Some(*percent);
         }
         WfcdMsg::Done { success: true } => {
-            state.tools_used.clear();
+            state.wfcd_progress = None;
             state.messages.push(ChatEntry::cephalon(
                 "✅ Base de datos de items (WFCD) actualizada.",
             ));
             audio_player.play(AudioEvent::ToolExecuted { success: true });
         }
         WfcdMsg::Done { success: false } => {
-            state.tools_used.clear();
+            state.wfcd_progress = None;
             state.messages.push(ChatEntry::error(
                 "❌ La sincronización WFCD no se completó.",
             ));
             audio_player.play(AudioEvent::Error);
         }
         WfcdMsg::Error { msg } => {
-            state.tools_used.clear();
+            state.wfcd_progress = None;
             state.messages.push(ChatEntry::error(format!(
                 "❌ Error sincronizando WFCD: {msg}"
             )));
@@ -811,18 +798,12 @@ const COMMANDS: &[&str] = &[
     "/help",
 ];
 
-#[doc(hidden)]
-thread_local! {
-    static TAB_LAST_IDX: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
 /// Maneja comandos que empiezan con '/'.
 #[allow(clippy::too_many_arguments)]
 fn handle_command(
     state: &mut UiState,
     cmd: &str,
     ollama: &OllamaClient,
-    chat_model: &str,
     audio_player: &AudioPlayer,
     ws_manual_tx: &Sender<Result<WorldState, String>>,
     sync_tx: &Sender<WfcdMsg>,
@@ -855,9 +836,9 @@ fn handle_command(
             ));
         }
         "/quit" | "/exit" => {
+            state.quit = true;
             state.messages.push(ChatEntry::cephalon("👋 ¡Hasta la próxima, Tenno!"));
-            std::thread::sleep(Duration::from_millis(500));
-            std::process::exit(0);
+            audio_player.play(AudioEvent::ToolExecuted { success: true });
         }
         "/clear" => {
             state.messages.clear();
@@ -867,34 +848,24 @@ fn handle_command(
             audio_player.play(AudioEvent::ToolExecuted { success: true });
         }
         "/status" => {
-            let models = ollama.list_models().unwrap_or_default();
-            let has_personality = models
-                .iter()
-                .any(|m| m.starts_with(&format!("cehalon-{}:", state.personality)));
-            let active_model = if has_personality {
-                format!("cehalon-{} (personalidad)", state.personality)
-            } else {
-                state.model.clone()
-            };
             let ws_age = state
                 .worldstate
                 .as_ref()
                 .map(|ws| format!("{}s", ws.fetched_at.elapsed().as_secs()))
                 .unwrap_or_else(|| "sin datos".to_string());
 
+            let model = effective_model(&state, ollama);
             state.messages.push(ChatEntry::cephalon(format!(
                 "📊 **Estado del sistema:**\n\
                  \n\
                  🎭 Personalidad: **{}**\n\
                  🧠 Modelo activo: **{}**\n\
-                 🧩 Modelo de chat: **{}**\n\
                  🌐 Ollama: **{}** {}\n\
                  🌍 Worldstate: **{}** (actualizado hace {})\n\
                  💬 Mensajes en chat: **{}**\n\
-                 🔧 Tools disponibles: worldstate, buscar_item, consultar_precio, buscar_guia",
+                 🔧 Tools disponibles: worldstate, buscar_item, donde_encontrar, consultar_precio, buscar_guia",
                 state.personality.to_uppercase(),
-                active_model,
-                chat_model,
+                model,
                 ollama.host(),
                 if ollama.health().is_ok() { "✅ OK" } else { "❌ OFFLINE" },
                 if state.worldstate.is_some() { "activo" } else { "esperando" },
@@ -1070,35 +1041,45 @@ fn handle_command(
 
 /// Autocompletado con Tab: cicla entre comandos que coincidan.
 fn handle_tab(state: &mut UiState, audio_player: &AudioPlayer) {
-    let input = state.input.trim_start_matches('/').to_string();
-    if input.is_empty() {
-        // Si no hay nada, ciclar por todos
-        TAB_LAST_IDX.with(|cell| {
-            let next = (cell.get() + 1) % COMMANDS.len();
-            cell.set(next);
-            state.input = format!("/{} ", COMMANDS[next]);
-        });
-        audio_player.play(AudioEvent::ToolExecuted { success: true });
-        return;
-    }
-    // Buscar comandos que empiecen por lo escrito
+    // COMMANDS ya incluye la barra (ej. "/personality")
+    let typed = state.input.trim_start_matches('/').trim_end().to_string();
     let matches: Vec<&str> = COMMANDS
         .iter()
-        .filter(|c| c.starts_with(&format!("/{input}")))
+        .filter(|c| c.trim_start_matches('/').starts_with(&typed))
         .copied()
         .collect();
     if matches.is_empty() {
         return;
     }
-    // Encontrar el actual y avanzar al siguiente
-    TAB_LAST_IDX.with(|cell| {
-        let current = format!("/{input}");
-        let idx = matches.iter().position(|c| *c == current).unwrap_or(0);
-        let next = (idx + 1) % matches.len();
-        cell.set(next);
-        state.input = format!("{} ", matches[next]);
-    });
+    // Si el input actual terminó en espacio, fue producido por Tab → cicla
+    let produced_by_tab = state.input.ends_with(' ');
+    let current = if produced_by_tab {
+        state.input.trim_end().to_string()
+    } else {
+        state.input.trim_start_matches('/').to_string()
+    };
+    let idx = matches
+        .iter()
+        .position(|c| c.trim_start_matches('/') == current)
+        .unwrap_or(0);
+    let next = (idx + 1) % matches.len();
+    state.input = format!("{} ", matches[next]);
     audio_player.play(AudioEvent::ToolExecuted { success: true });
+}
+
+/// Modelo efectivo según la personalidad activa: si existe `cehalon-<pers>`, úsalo;
+/// si no, cae al modelo base de `state.model`.
+fn effective_model(state: &UiState, ollama: &OllamaClient) -> String {
+    let name = format!("cehalon-{}", state.personality);
+    let has = ollama
+        .list_models()
+        .map(|ms| ms.iter().any(|m| m.starts_with(&format!("{name}:"))))
+        .unwrap_or(false);
+    if has {
+        name
+    } else {
+        state.model.clone()
+    }
 }
 
 /// Lanza el mensaje en un thread de streaming y devuelve el canal de tokens.
@@ -1109,7 +1090,7 @@ fn handle_tab(state: &mut UiState, audio_player: &AudioPlayer) {
 fn send_chat(
     state: &mut UiState,
     ollama: &OllamaClient,
-    chat_model: &str,
+    model: &str,
     msg: String,
     audio_player: Option<&AudioPlayer>,
 ) -> Receiver<StreamMsg> {
@@ -1118,8 +1099,8 @@ fn send_chat(
     state.pending.clear();
     state.tools_used.clear();
 
-    // Audio: nuevo mensaje del usuario → Cephalon va a responder
-    // Audio: nuevo mensaje del usuario → Cephalon va a responder
+    // Audio: el usuario envía un mensaje → el Cephalon responde (en cola suena
+    // Incoming Call 1 y después Incoming Call 2, "esperando respuesta").
     if let Some(a) = audio_player {
         a.play(AudioEvent::CephalonMessage {
             personality: state.personality_enum(),
@@ -1144,7 +1125,7 @@ fn send_chat(
 
     let (tx, rx) = mpsc::channel();
     let host = ollama.host().to_string();
-    let model = chat_model.to_string();
+    let model_name = model.to_string();
     let audio_for_thread = audio_player.cloned();
 
     thread::spawn(move || {
@@ -1219,7 +1200,7 @@ fn send_chat(
         }
 
         for _round in 0..MAX_TOOL_ROUNDS {
-            let result = client.chat_stream(&model, &messages, Some(&tools), |token| {
+            let result = client.chat_stream(&model_name, &messages, Some(&tools), |token| {
                 let _ = tx.send(StreamMsg::Token(token.to_string()));
             });
 

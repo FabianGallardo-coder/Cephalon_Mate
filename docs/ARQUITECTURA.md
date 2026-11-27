@@ -15,7 +15,7 @@ Diseño técnico por capas. Fase 1 = TUI; Fase 3 = mascota (misma base, otra car
 │    · sprite animado, always-on-top, transparente             │
 │    · sonidos del Fansite Kit                                 │
 ├─────────────────────────────────────────────────────────────┤
-│  CAPA CEREBRO — Ollama (localhost:11434)                     │
+│  CAPA CEREBRO — Ollama (localhost:12434)                     │
 │    · Modelfile según personalidad (ver docs/PERSONALIDADES)  │
 │    · system prompt + parámetros (temperature, num_ctx)       │
 │    · tool calling: el modelo elige qué tool usar             │
@@ -23,14 +23,16 @@ Diseño técnico por capas. Fase 1 = TUI; Fase 3 = mascota (misma base, otra car
 ├─────────────────────────────────────────────────────────────┤
 │  CAPA TOOLS (funciones Rust expuestas al modelo)             │
 │    · buscar_item(nombre)        → SQLite items WFCD          │
+│    · donde_encontrar(nombre)    → drops/polaridades/recetas   │
 │    · consultar_precio(item)     → warframe.market (+caché)   │
 │    · worldstate()               → alertas/fissuras/sortie    │
-│    · buscar_guia(query)         → RAG (embeddings)           │
+│    · buscar_guia(query)         → RAG (embeddings, stub)     │
 ├─────────────────────────────────────────────────────────────┤
-│  CAPA DATOS — SQLite (data/cehalon.db)                       │
-│    · items, crafting, drops          (sync periódica WFCD)   │
-│    · worldstate snapshot             (refresh ~60 s)         │
-│    · precios warframe.market         (TTL ~5 min)            │
+│  CAPA DATOS — SQLite (data/cehalon_items.db)                 │
+│    · items, crafting, drops, polaridades  (sync WFCD)        │
+│    · precios warframe.market             (TTL ~5 min)       │
+│    · worldstate en memoria               (refresh ~60 s,     │
+│      no se persiste)                                         │
 │    · embeddings (nomic-embed-text)   (índice RAG, Fase 2)    │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -51,10 +53,15 @@ Diseño técnico por capas. Fase 1 = TUI; Fase 3 = mascota (misma base, otra car
 ## Flujo de una consulta
 
 1. Usuario escribe en el TUI.
-2. Se arma `/api/chat` con: system prompt de la personalidad activa, historial, lista de tools.
-3. Ollama responde (posiblemente con una llamada a tool).
-4. Si hay tool call → se ejecuta (SQLite/API) → resultado → segundo pase al modelo.
-5. Respuesta final en streaming al TUI.
+2. **Prefetch por intención** (`src/brain/intent.rs`): si la pregunta pide datos
+   de un item, drop, stats o polaridades, se ejecuta la tool correspondiente
+   *antes* de consultar al modelo y su salida se inyecta como bloque de datos
+   verificados.
+3. Se arma `/api/chat` con: system prompt de la personalidad activa, historial,
+   lista de tools y (si hubo prefetch) los datos verificados.
+4. Ollama responde (posiblemente con una llamada a tool).
+5. Si hay tool call → se ejecuta (SQLite/API) → resultado → segundo pase al modelo.
+6. Respuesta final en streaming al TUI.
 
 ## Comandos TUI (Fase 1)
 
@@ -62,9 +69,11 @@ Diseño técnico por capas. Fase 1 = TUI; Fase 3 = mascota (misma base, otra car
 |---------|--------|
 | `/personality ordis\|suda\|simaris` | Cambia personalidad en vivo (recarga Modelfile) |
 | `/model <nombre>` | Cambia modelo Ollama |
-| `/status` | Estado: modelo, personalidad, próxima actualización worldstate |
-| `/worldstate` | Muestra el worldstate crudo sin pasar por el modelo |
+| `/status` | Estado: modelo, personalidad, worldstate y tools disponibles |
+| `/worldstate` | Fuerza una actualización del worldstate (en background) |
+| `/sync` | Re-sincroniza la BD de items con WFCD |
 | `/clear` | Limpia historial |
+| `/help` | Lista de comandos |
 | `/quit` | Sale |
 
 ## Fase 3 (mascota) — notas

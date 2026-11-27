@@ -577,31 +577,23 @@ fn check_intent_detection(conn: &Connection) -> CheckResult {
 /// - mismo número de fuentes de drop,
 /// - mismo número de habilidades (warframes).
 fn check_upstream_integrity(conn: &Connection) -> CheckResult {
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(45))
-        .user_agent("cehalon-mate-qa/1.0")
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return CheckResult {
-                name: "sync:integridad_upstream",
-                status: Status::Warn,
-                detail: format!("no se pudo crear el cliente HTTP: {e}"),
-            }
-        }
-    };
+    let client = ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(45)))
+            .user_agent("cehalon-mate-qa/1.0")
+            .build(),
+    );
 
     let fetch = |cat: &str| -> Result<Vec<serde_json::Value>, String> {
         let url = format!("{}/{cat}.json", crate::brain::items::WFCD_RAW_BASE);
         let resp = client
             .get(&url)
-            .send()
+            .call()
             .map_err(|e| format!("GET {cat}: {e}"))?;
         if !resp.status().is_success() {
             return Err(format!("GET {cat}: HTTP {}", resp.status()));
         }
-        let text = resp.text().map_err(|e| format!("{cat}: {}", e))?;
+        let text = resp.into_body().read_to_string().map_err(|e| format!("{cat}: {}", e))?;
         serde_json::from_str(&text).map_err(|e| format!("{cat}: JSON inválido: {e}"))
     };
 

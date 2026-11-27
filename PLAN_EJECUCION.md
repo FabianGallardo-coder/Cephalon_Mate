@@ -88,9 +88,10 @@ Render: event loop con `crossterm::event::poll(timeout)` → redraw bajo demanda
   - **Resultado:** `src/brain/items.rs` con esquema completo (unique_name PK, índices en name/type/category/tradable), `init_db`, `sync_wfcd` (descarga release latest de GitHub WFCD, upsert), `search_items`/`get_item_by_name`/`format_item_for_llm`. Conexión global `Arc<Mutex<Connection>>` en `tools.rs`. `tools::execute("buscar_item")` usa BD real. Sync al arrancar: si BD vacía, descarga ~4000 items de WFCD release.
   - **Verificación:** 15/15 tests unitarios + TUI arranca → "[items] BD vacía, sincronizando WFCD..." → descarga ~4000 items → panel WORLDSTATE con datos reales. Tool `buscar_item` disponible para el modelo.
 
-- [ ] **P10 — warframe.market + tool `consultar_precio`**
+- [x] **P10 — warframe.market + tool `consultar_precio`** ✅ *2026-11-26*
   - Fetch de precio, caché con TTL en SQLite, formato con ▲▼ si hay cambio.
   - *Done:* "¿cuánto vale Soma Prime?" → precio real citado `(fuente: warframe.market)`.
+  - **Resultado:** `get_price`/`fetch_and_cache_price` en `items.rs`: TTL en tabla `prices`, órdenes visibles de usuarios `online`/`ingame`, media de sell/buy y `format_price_for_llm` para la respuesta del modelo.
 
 ### Bloque D — Personalidad y control
 
@@ -127,9 +128,26 @@ Render: event loop con `crossterm::event::poll(timeout)` → redraw bajo demanda
 
 ### Bloque E — Cierre de fase
 
-- [ ] **P14 — `.gitignore`, README quickstart, tests**
+- [x] **P14 — `.gitignore`, README quickstart, tests** ✅ *2026-11-26*
   - README: requisitos, arranque, comandos. Tests unitarios de config y parseo de tools.
   - *Done:* `cargo test` verde + `cargo build --release` compila.
+
+### Bloque F — Datos verificados y QA
+
+- [x] **P15 — Tool `donde_encontrar` + prefetch por intención** ✅ *2026-11-26*
+  - Tool con drops + probabilidad, polaridades, mods compatibles y receta; `src/brain/intent.rs` detecta la intención y ejecuta la tool antes de responder.
+  - *Done:* "¿Dónde dropea Serration?" responde con fuentes reales y probabilidad; un item ausente del dataset se marca `ITEM NO CATALOGADO`.
+  - **Resultado:** `tools.rs` con `donde_encontrar` + formateadores; `intent.rs` con `detect_all`/`unknown_items`; guard anti-alucinación en el bloque de prefetch de `main.rs`; flags `--tool`, `--ask` y `--model`.
+
+- [x] **P16 — Suite de QA de datos (`src/qa.rs`)** ✅ *2026-11-26*
+  - Batería de checks sobre el dataset WFCD: warframes, mods, drops, probabilidades e integridad con upstream.
+  - *Done:* `cargo run -- --qa` → `RESULTADO QA: ✅ PASS` (27 checks, 0 fallidos).
+  - **Resultado:** `--qa` mide la BD local; `--qa --sync` sincroniza WFCD antes de medir. Detectó y corrigió el bug de probabilidades al 860 % (chance en fracción vs porcentaje).
+
+- [x] **P17 — QA end-to-end con Ollama + paso en CI** ✅ *2026-11-27*
+  - Script `scripts/qa_ollama.ps1` con preguntas reales y checks positivos/negativos; paso de QA en GitHub Actions.
+  - *Done:* `pwsh -File scripts/qa_ollama.ps1` → 5/5; CI verde con el paso de QA de datos.
+  - **Resultado:** checks con semántica `esperar`/`opcional`/`prohibido` para tolerar la varianza del modelo 3B; en CI el paso corre con `continue-on-error: true` (informativo, no gate).
 
 ---
 
@@ -150,7 +168,17 @@ Render: event loop con `crossterm::event::poll(timeout)` → redraw bajo demanda
 | 2026-11-26 | P11 | ✅ Hecho. 7 comandos TUI + Tab autocompletado, validación en Ollama. |
 | 2026-11-26 | P12 | ✅ Hecho. Cambio personalidad en caliente (auto-create + reload), 19/19 tests. |
 | 2026-11-26 | P13 | ✅ Hecho. Logo ASCII + sprites HUD + audio rodio thread, TUI vivo, 19/19 tests. |
+| 2026-11-26 | P14 | ✅ Hecho. `.gitignore`, README completo y tests de config/tools. |
+| 2026-11-26 | P15 | ✅ Hecho. Tool `donde_encontrar` + prefetch por intención; parser WFCD por 26 categorías (upstream ya no publica `items.json`); normalización de probabilidades a 0-100 %. |
+| 2026-11-26 | P16 | ✅ Hecho. `src/qa.rs` con 27 checks, `--qa` / `--qa --sync` en verde. |
+| 2026-11-27 | P17 | ✅ Hecho. `scripts/qa_ollama.ps1` 5/5 (también con Suda) + paso de QA en CI. |
 
 ## Pasos FIX (abiertos si algo se rompe después de tachado)
 
 _(vacío)_
+
+## Estado final de la Fase 1
+
+Todos los pasos P01–P17 están tachados. La Fase 1 se cerró con la release
+**v1.0.0** (2026-11-26): `cargo test` en verde (56 tests + 6 ignorados), QA de
+datos PASS y CI verde en GitHub Actions.

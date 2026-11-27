@@ -19,7 +19,7 @@ Primera versión estable del asistente.
   (máx. 4 rondas por mensaje).
 - Tools del asistente: `worldstate`, `buscar_item`, `donde_encontrar`,
   `consultar_precio` y `buscar_guia` (stub declarado como tal).
-- Nueva tool `donde_encontrar`: devuelve fuentes de drop con su probabilidad,
+- La tool `donde_encontrar` devuelve fuentes de drop con su probabilidad,
   polaridades de un warframe, mods compatibles según su polaridad y receta de
   crafteo con ingredientes en nombres legibles.
 - Suite de QA de datos en `src/qa.rs` (27 checks en esta release), ejecutable con `--qa`;
@@ -72,7 +72,7 @@ Primera versión estable del asistente.
   terminal; ahora el layout se recalcula en cada frame.
 - El stream del modelo podía dejar el spinner colgado si se agotaban las
   rondas de herramientas.
-- Se normalizan las probabilidades de drop de WFCD a porcentaje (0-100),
+- Se normalizan las probabilidades de drop de WFCD a porcentaje (0-100 %),
   corrigiendo el caso que mostraba valores como `860 %`.
 
 [1.0.0]: https://github.com/FabianGallardo-coder/Cephalon_Mate/releases/tag/v1.0.0

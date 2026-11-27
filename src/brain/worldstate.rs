@@ -24,7 +24,7 @@ impl Default for WorldState {
             alerts: Vec::new(),
             sortie: None,
             invasions: Vec::new(),
-            fetched_at: Instant::now() - Duration::from_secs(3600), // viejo para forzar refresh
+            fetched_at: Instant::now().checked_sub(Duration::from_secs(3600)).unwrap_or_else(Instant::now),
         }
     }
 }
@@ -40,7 +40,7 @@ pub fn spawn_fetcher(refresh_secs: u64) -> Receiver<WorldState> {
                 .build(),
         );
         let interval = Duration::from_secs(refresh_secs);
-        let mut last_fetch = Instant::now() - interval; // forzar fetch inmediato
+        let mut last_fetch = Instant::now().checked_sub(interval).unwrap_or_else(Instant::now); // forzar fetch inmediato
 
         loop {
             let now = Instant::now();
@@ -52,9 +52,9 @@ pub fn spawn_fetcher(refresh_secs: u64) -> Receiver<WorldState> {
                         }
                         last_fetch = Instant::now();
                     }
-                    Err(e) => {
-                        eprintln!("[worldstate] fetch error: {e}");
-                        // no rompemos; reintentamos en el siguiente ciclo
+                    Err(_) => {
+                        // fetch fallido: reintentar en el siguiente ciclo sin loguear
+                        // (el log corrompería la TUI en raw mode)
                     }
                 }
             }
@@ -79,10 +79,10 @@ pub fn fetch_now() -> Result<WorldState, String> {
 }
 
 fn fetch_all(client: &ureq::Agent) -> Result<WorldState, String> {
-    let fissures = fetch_fissures(client)?;
-    let alerts = fetch_alerts(client)?;
-    let sortie = fetch_sortie(client)?;
-    let invasions = fetch_invasions(client)?;
+    let fissures = fetch_fissures(client)?;           // imprescindible
+    let alerts = fetch_alerts(client).unwrap_or_default();
+    let sortie = fetch_sortie(client).unwrap_or_default();
+    let invasions = fetch_invasions(client).unwrap_or_default();
 
     Ok(WorldState {
         fissures,
@@ -149,22 +149,22 @@ fn fetch_fissures(client: &ureq::Agent) -> Result<Vec<Fissure>, String> {
 
 #[derive(Debug, Deserialize)]
 struct AlertRaw {
-    #[serde(rename = "mission")]
-    mission: AlertMissionRaw,
-    #[serde(rename = "expiry")]
+    #[serde(rename = "mission", default)]
+    mission: Option<AlertMissionRaw>,
+    #[serde(rename = "expiry", default)]
     expiry: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct AlertMissionRaw {
-    #[serde(rename = "node")]
+    #[serde(rename = "node", default)]
     node: String,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     mission_type: String,
-    #[serde(rename = "faction")]
+    #[serde(rename = "faction", default)]
     faction: String,
-    #[serde(rename = "reward")]
-    reward: AlertRewardRaw,
+    #[serde(rename = "reward", default)]
+    reward: Option<AlertRewardRaw>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -206,12 +206,15 @@ fn fetch_alerts(client: &ureq::Agent) -> Result<Vec<Alert>, String> {
         .map_err(|e| format!("alerts parse: {e}"))?;
     Ok(raw
         .into_iter()
-        .map(|a| Alert {
-            node: a.mission.node,
-            mission_type: a.mission.mission_type,
-            faction: a.mission.faction,
-            reward_text: format_reward(&a.mission.reward),
-            expires_at: a.expiry,
+        .filter_map(|a| {
+            let m = a.mission?;
+            Some(Alert {
+                node: m.node,
+                mission_type: m.mission_type,
+                faction: m.faction,
+                reward_text: m.reward.as_ref().map(format_reward).unwrap_or_else(|| "—".into()),
+                expires_at: a.expiry,
+            })
         })
         .collect())
 }
@@ -233,13 +236,13 @@ fn format_reward(r: &AlertRewardRaw) -> String {
 
 #[derive(Debug, Deserialize)]
 struct SortieRaw {
-    #[serde(rename = "variants")]
+    #[serde(rename = "variants", default)]
     variants: Vec<SortieVariantRaw>,
-    #[serde(rename = "boss")]
+    #[serde(rename = "boss", default)]
     boss: String,
-    #[serde(rename = "faction")]
+    #[serde(rename = "faction", default)]
     faction: String,
-    #[serde(rename = "expiry")]
+    #[serde(rename = "expiry", default)]
     expiry: String,
     #[serde(rename = "id", default)]
     _id: String,
@@ -285,6 +288,9 @@ fn fetch_sortie(client: &ureq::Agent) -> Result<Option<Sortie>, String> {
         .into_body()
         .read_json()
         .map_err(|e| format!("sortie parse: {e}"))?;
+    if raw.variants.is_empty() {
+        return Ok(None);
+    }
     Ok(Some(Sortie {
         missions: raw
             .variants
@@ -303,14 +309,14 @@ fn fetch_sortie(client: &ureq::Agent) -> Result<Option<Sortie>, String> {
 
 #[derive(Debug, Deserialize)]
 struct InvasionRaw {
-    #[serde(rename = "node")]
+    #[serde(rename = "node", default)]
     node: String,
-    #[serde(rename = "desc")]
+    #[serde(rename = "desc", default)]
     desc: String,
-    #[serde(rename = "attacker")]
-    attacker: InvasionFactionRaw,
-    #[serde(rename = "defender")]
-    defender: InvasionFactionRaw,
+    #[serde(rename = "attacker", default)]
+    attacker: Option<InvasionFactionRaw>,
+    #[serde(rename = "defender", default)]
+    defender: Option<InvasionFactionRaw>,
     #[serde(rename = "count", default)]
     count: i64,
     #[serde(rename = "requiredRuns", default)]
@@ -362,27 +368,29 @@ fn fetch_invasions(client: &ureq::Agent) -> Result<Vec<Invasion>, String> {
         .map_err(|e| format!("invasions parse: {e}"))?;
     Ok(raw
         .into_iter()
-        .map(|i| Invasion {
-            node: i.node,
-            desc: i.desc,
-            attacker_faction: i.attacker.faction,
-            attacker_reward: i
-                .attacker
-                .reward
-                .as_ref()
-                .map(format_invasion_reward)
-                .unwrap_or_else(|| "—".into()),
-            defender_faction: i.defender.faction,
-            defender_reward: i
-                .defender
-                .reward
-                .as_ref()
-                .map(format_invasion_reward)
-                .unwrap_or_else(|| "—".into()),
-            count: i.count,
-            required_runs: i.required_runs,
-            completion: i.completion,
-            completed: i.completed,
+        .filter_map(|i| {
+            let atk = i.attacker?;
+            let def = i.defender?;
+            Some(Invasion {
+                node: i.node,
+                desc: i.desc,
+                attacker_faction: atk.faction,
+                attacker_reward: atk
+                    .reward
+                    .as_ref()
+                    .map(format_invasion_reward)
+                    .unwrap_or_else(|| "—".into()),
+                defender_faction: def.faction,
+                defender_reward: def
+                    .reward
+                    .as_ref()
+                    .map(format_invasion_reward)
+                    .unwrap_or_else(|| "—".into()),
+                count: i.count,
+                required_runs: i.required_runs,
+                completion: i.completion,
+                completed: i.completed,
+            })
         })
         .collect())
 }

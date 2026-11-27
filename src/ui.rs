@@ -65,6 +65,8 @@ pub struct UiState {
     pub pending: String,
     /// Etiquetas de tools ejecutadas en la ronda actual (línea verde).
     pub tools_used: Vec<String>,
+    /// Progreso del sync WFCD (0-100), para mostrar en la barra de input sin pisar tools_used.
+    pub wfcd_progress: Option<u8>,
     /// Worldstate cacheado para el panel izquierdo.
     pub worldstate: Option<WorldState>,
     /// Historial de envíos (flechas ↑/↓).
@@ -73,6 +75,8 @@ pub struct UiState {
     pub history_idx: Option<usize>,
     /// Estado del widget `List` del panel de worldstate.
     pub worldstate_list: ListState,
+    /// Flag para salida limpia desde /quit.
+    pub quit: bool,
 }
 
 impl UiState {
@@ -87,10 +91,12 @@ impl UiState {
             thinking: false,
             pending: String::new(),
             tools_used: Vec::new(),
+            wfcd_progress: None,
             worldstate: None,
             history: Vec::new(),
             history_idx: None,
             worldstate_list: ListState::default(),
+            quit: false,
         }
     }
 
@@ -420,7 +426,8 @@ pub fn render_chat(state: &mut UiState, f: &mut Frame<'_>, area: Rect) {
     }
 
     // Respuesta en curso: texto parcial creciendo + cursor.
-    if !state.pending.is_empty() || state.thinking || !state.tools_used.is_empty() {
+    let is_streaming = !state.pending.is_empty() || state.thinking || !state.tools_used.is_empty() || state.wfcd_progress.is_some();
+    if is_streaming {
         lines.push(Line::styled(
             format!(" ◆ {}", state.personality.to_uppercase()),
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
@@ -428,6 +435,11 @@ pub fn render_chat(state: &mut UiState, f: &mut Frame<'_>, area: Rect) {
         if state.pending.is_empty() && !state.tools_used.is_empty() {
             // Aún no llegó texto: mostrar el spinner mientras corre la tool.
             lines.push(Line::styled(" ⠋ consultando…", Style::default().fg(DIM)));
+        } else if state.pending.is_empty() && state.wfcd_progress.is_some() {
+            // Progreso de WFCD sync.
+            if let Some(pct) = state.wfcd_progress {
+                lines.push(Line::styled(format!(" ⠋ sincronizando WFCD… {}%", pct), Style::default().fg(DIM)));
+            }
         } else if state.pending.is_empty() {
             lines.push(Line::styled(" ⠋ pensando…", Style::default().fg(DIM)));
         } else {

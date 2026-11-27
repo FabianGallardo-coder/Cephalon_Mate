@@ -28,18 +28,19 @@ Primera entrega: un **TUI chat funcional**. Segunda entrega: una **mascota de es
 
 ## Fases
 
-### Fase 0 — Documentación y assets (EN CURSO)
+### Fase 0 — Documentación y assets ✅
 - Esta documentación. ✅
 - ~~Descargar del Fansite Kit~~ → **hecho**: `C:\Users\Fabian\Desktop\_Proyectos\Cephalon_Mate\Warframe Fansite Kit` (2.320 archivos, kit completo).
 - Escribir los 3 Modelfiles de personalidad. ✅ (`modelfiles/`)
-- Elegir personalidad por defecto. ⬜
+- Elegir personalidad por defecto. ✅ (`ordis`, en `config.toml`)
 
-### Fase 1 — TUI chat funcional
+### Fase 1 — TUI chat funcional ✅ *(v1.0.0 publicada el 2026-11-26)*
 - TUI con `ratatui` + `crossterm`: historial de chat, indicador de streaming, panel de estado.
 - Cliente Ollama con **tool calling**: el modelo decide cuándo consultar datos reales.
-- Tools: `buscar_item`, `consultar_precio`, `worldstate`, `buscar_guia` (RAG).
+- Tools: `buscar_item`, `consultar_precio`, `worldstate`, `donde_encontrar`, `buscar_guia` (RAG, stub).
 - SQLite como caché local (items WFCD + worldstate + embeddings).
 - Refresco periódico del worldstate (~60 s).
+- Suite de QA de datos (`--qa`) y QA end-to-end con Ollama (`scripts/qa_ollama.ps1`).
 
 ### Fase 2 — Conocimiento del juego (RAG)
 - Indexar fuentes de conocimiento (wikis WFCD, datos extraídos) con `nomic-embed-text`.
@@ -60,8 +61,8 @@ Primera entrega: un **TUI chat funcional**. Segunda entrega: una **mascota de es
 │  Cerebro: Ollama + Modelfile de personalidad          │
 │  (system prompt por personalidad + tool calling)      │
 ├──────────────────────────────────────────────────────┤
-│  Tools: buscar_item · consultar_precio · worldstate   │
-│         buscar_guia (RAG)                             │
+│  Tools: buscar_item · donde_encontrar · consultar_precio   │
+│         worldstate · buscar_guia (RAG)                     │
 ├──────────────────────────────────────────────────────┤
 │  Datos: SQLite  ←  WFCD API · Worldstate · wfmkt      │
 │         embeddings (nomic-embed-text)                 │

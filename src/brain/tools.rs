@@ -50,12 +50,12 @@ static WORLDSTATE_CACHE: std::sync::Mutex<Option<WorldState>> = std::sync::Mutex
 
 /// Setear el cache desde el thread principal (llamado tras recibir del fetcher).
 pub fn set_worldstate_cache(ws: WorldState) {
-    *WORLDSTATE_CACHE.lock().unwrap() = Some(ws);
+    *WORLDSTATE_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some(ws);
 }
 
 /// Obtener el cache (para `execute`).
 fn get_worldstate_cache() -> Option<WorldState> {
-    WORLDSTATE_CACHE.lock().unwrap().clone()
+    WORLDSTATE_CACHE.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// Conexión a la BD de items: vive en `items` (la usan el sync en background
@@ -171,7 +171,7 @@ pub fn execute(name: &str, args: &serde_json::Value) -> String {
             }
             match get_items_db() {
                 Some(arc) => {
-                    let conn = arc.lock().unwrap();
+                    let conn = arc.lock().unwrap_or_else(|e| e.into_inner());
                     // Primero intentar búsqueda exacta
                     if let Ok(Some(item)) = get_item_by_name(&conn, nombre) {
                         return format_item_for_llm(&item);
@@ -205,7 +205,7 @@ pub fn execute(name: &str, args: &serde_json::Value) -> String {
             let tipo = args.get("tipo").and_then(|v| v.as_str()).unwrap_or("auto");
             match get_items_db() {
                 Some(arc) => {
-                    let conn = arc.lock().unwrap();
+                    let conn = arc.lock().unwrap_or_else(|e| e.into_inner());
                     let item = match get_item_by_name(&conn, nombre)
                         .ok()
                         .flatten()
@@ -239,10 +239,17 @@ pub fn execute(name: &str, args: &serde_json::Value) -> String {
             }
             match get_items_db() {
                 Some(arc) => {
-                    let conn = arc.lock().unwrap();
-                    match get_price(&conn, item) {
-                        Ok(price) => format_price_for_llm(&price),
-                        Err(e) => format!("ERROR consultando precio de '{item}': {e}"),
+                    let conn = arc.lock().unwrap_or_else(|e| e.into_inner());
+                    match crate::brain::items::get_price_cached(&conn, item) {
+                        Some(price) => format_price_for_llm(&price),
+                        None => {
+                            // Cache miss: soltar lock y hacer fetch (la función maneja su propio lock para upsert)
+                            drop(conn);
+                            match crate::brain::items::fetch_and_cache_price(item) {
+                                Ok(price) => format_price_for_llm(&price),
+                                Err(e) => format!("ERROR consultando precio de '{item}': {e}"),
+                            }
+                        }
                     }
                 }
                 None => "ERROR: BD de items no inicializada".into(),
@@ -383,29 +390,22 @@ fn format_worldstate_real(
     ws: &crate::brain::worldstate::WorldState,
     filter: Option<&str>,
 ) -> String {
-    let mut out = String::new();
     match filter {
-        Some("fissure") | None => {
-            out.push_str(&ws.format_fissures(filter));
-        }
-        Some("alert") => {
-            out.push_str(&ws.format_alerts());
-        }
-        Some("sortie") => {
-            out.push_str(&ws.format_sortie());
-        }
-        Some("invasion") => {
-            out.push_str(&ws.format_invasions());
-        }
-        _ => {
-            out.push_str("WORLDSTATE (fetch real):\n");
-            out.push_str(&format!("FISSURE ({}):{}", ws.fissures.len(), ws.format_fissures(None)));
-            out.push_str(&format!("\nALERT ({}):{}", ws.alerts.len(), ws.format_alerts()));
-            out.push_str(&format!("\nSORTIE:{}", ws.format_sortie()));
-            out.push_str(&format!("\nINVASION ({}):{}", ws.invasions.len(), ws.format_invasions()));
-        }
+        Some("fissure") => ws.format_fissures(None),
+        Some("alert") => ws.format_alerts(),
+        Some("sortie") => ws.format_sortie(),
+        Some("invasion") => ws.format_invasions(),
+        _ => format!(
+            "WORLDSTATE (fetch real):\nFISSURE ({}):{}\nALERT ({}):{}\nSORTIE:{}\nINVASION ({}):{}",
+            ws.fissures.len(),
+            ws.format_fissures(None),
+            ws.alerts.len(),
+            ws.format_alerts(),
+            ws.format_sortie(),
+            ws.invasions.len(),
+            ws.format_invasions()
+        ),
     }
-    out
 }
 
 /// Etiqueta compacta para la línea verde del TUI, p. ej. `worldstate(tipo=fissure)`.

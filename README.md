@@ -3,8 +3,8 @@
 > Tu Cephalon personal con IA local — asistente de Warframe que corre 100% en tu máquina.
 
 Cephalon Mate es una TUI en **Rust** que usa **Ollama** (IA local, sin nube) para
-responde consultas de Warframe: estado en vivo del juego, base de datos de items,
-precios de warframe.market y consultas normales con la personalidad de tu choice.
+responder consultas de Warframe: estado en vivo del juego, base de datos de items,
+precios de warframe.market y consultas normales con la personalidad que elijas.
 
 ## ¿Qué es?
 
@@ -153,10 +153,11 @@ Eventos y sonido que disparan:
 |---|---|---|
 | Mensaje del Cephalon | `Ordis - Incoming Call 1.mp3` | `Lotus_Incoming Communication.mp3` |
 | Esperando respuesta | `Ordis - Incoming Call 2.mp3` | `Lotus_Message Waiting.mp3` |
-| Mensaje recibido | `Ordis - Incoming Message 2.mp3` | `Lotus_Message Recieved.mp3` |
+| Tool ejecutada (datos recibidos) | `Ordis - Incoming Message 2.mp3` | `Lotus_Message Recieved.mp3` |
 | Respuesta lista | `Ordis - Incoming Message 1.mp3` | `Lotus_Message Arrived.mp3` |
 | Worldstate actualizado | `Ordis - Incoming Call or Message.mp3` | `Lotus_Transmission Recieved.mp3` |
-| Alerta (Steel Path) | `Ordis - Alarm (Emergency).mp3` | `Lotus_Somethings Happening Tenno.mp3` |
+| Fissura Steel Path (alerta crítica) | `Ordis - Alarm (System in Need).mp3` | `Lotus_It Is Time Tenno.mp3` |
+| Alertas activas al refrescar | `Ordis - Alarm (Emergency).mp3` | `Lotus_Somethings Happening Tenno.mp3` |
 | Error | `Miscellaneous/CipherFail.mp3` | `Miscellaneous/CipherFail.mp3` |
 
 El audio corre en su propio thread (`mpsc`), así que nunca bloquea la UI.
@@ -265,7 +266,7 @@ cargo test -- --ignored
 
 ## CI
 
-`.github/workflows/ci.yml` corre en cada push y PR sobre `main`/`master`:
+`.github/workflows/ci.yml` corre en cada push y PR sobre `main`, `master` y `Master`:
 
 1. `cargo build`
 2. `cargo test --verbose`

@@ -6,16 +6,16 @@ Todas las fuentes de datos y repos de apoyo. **Prohibido inventar datos fuera de
 
 | Fuente | URL | Uso | Frecuencia |
 |--------|-----|-----|------------|
-| Worldstate | `https://api.warframe.us/v1/worldstate` (o `https://content.warframe.com/...`/`https://api.warframestat.us` como respaldo) | Alertas, fissuras, invasiones, sorties, incursiones | ~60 s |
-| warframe.market | `https://api.warframe.market/v1/items` | Precios de venta/Compra de items | TTL ~5 min por item |
-| WFCD `warframe-items` | `https://api.github.com/repos/WFCD/warframe-items/releases/latest` (JSON) | Items completos: crafting, stats, drops | Sync semanal |
+| Worldstate | `https://api.warframestat.us/pc/{fissures,alerts,sortie,invasions}` | Alertas, fissuras, invasiones, sorties | ~60 s (configurable) |
+| warframe.market | `https://api.warframe.market/v1/items` | Precios de venta/compra de items | TTL ~5 min por item |
+| WFCD `warframe-items` | `https://raw.githubusercontent.com/WFCD/warframe-items/master/data/json/<Categoría>.json` (26 categorías; ver `docs/ARQUITECTURA.md`) | Items completos: crafting, stats, drops, polaridades | Sync al arrancar, con `/sync` para repetir |
 | WFCD `warframe-worldstate-data` | GitHub WFCD | Metadatos de worldstate (nombres, tipos) | Sync semanal |
 
 ## Repos clave (WFCD — Warframe Community Developers)
 
 | Repo | Qué aporta |
 |------|-----------|
-| [WFCD/warframe-items](https://github.com/WFCD/warframe-items) | ⭐ 434★ — Base de items oficial comunitaria (434★). "All Warframe items from the official API" |
+| [WFCD/warframe-items](https://github.com/WFCD/warframe-items) | ⭐ 435★ — Base de items oficial comunitaria. "All Warframe items from the official API" |
 | [WFCD/warframe-worldstate-data](https://github.com/WFCD/warframe-worldstate-data) | Data del worldstate para parsear alertas/fissuras |
 | [WFCD/warframe-worldstate-parser](https://github.com/WFCD/warframe-worldstate-parser) | Parser TS del worldstate (referencia de estructura; en Rust lo hacemos nosotros) |
 | [WFCD/WFinfo](https://github.com/WFCD/WFinfo) | Referencia: cómo muestran precios/ducats de fissuras |
