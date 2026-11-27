@@ -524,6 +524,10 @@ fn render_footer(f: &mut Frame<'_>, area: Rect) {
         Span::styled("Tab: completar", Style::default().fg(DIM)),
         Span::styled("  ·  ", Style::default().fg(Color::Rgb(50, 60, 70))),
         Span::styled("Ctrl+C: salir", Style::default().fg(DIM)),
+        Span::styled("  ·  ", Style::default().fg(Color::Rgb(50, 60, 70))),
+        Span::styled("Assets: Warframe Fansite Kit (Digital Extremes)", Style::default().fg(Color::Rgb(100, 120, 140)).italic()),
+        Span::styled("  ·  ", Style::default().fg(Color::Rgb(50, 60, 70))),
+        Span::styled("Data: WFCD · warframe.market · warframestat.us", Style::default().fg(Color::Rgb(100, 120, 140)).italic()),
     ]);
     f.render_widget(Paragraph::new(line).style(Style::default().bg(BG)), area);
 }

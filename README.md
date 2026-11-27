@@ -81,6 +81,7 @@ cargo run --release
 | `/worldstate` | Fuerza una actualización del worldstate (en background) |
 | `/sync` | Re-sincroniza la BD de items con WFCD |
 | `/clear` | Limpia el historial del chat |
+| `/credits` | Muestra créditos y atribución a terceros (Digital Extremes, WFCD, warframe.market, warframestat.us, Ollama) |
 | `/help` | Lista de comandos |
 | `/quit` | Sale de la app |
 

@@ -629,6 +629,8 @@ impl CephalonGui {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new("Enter: enviar  ·  Tab: completar  ·  Esc: salir").size(10.0).color(theme::DIM));
+                    ui.separator();
+                    ui.label(egui::RichText::new("Assets: Warframe Fansite Kit (Digital Extremes)  ·  Data: WFCD · warframe.market · warframestat.us").size(9.0).color(theme::DIM).italic());
                 });
             });
         });

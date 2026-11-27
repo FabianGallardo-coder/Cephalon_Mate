@@ -854,6 +854,7 @@ const COMMANDS: &[&str] = &[
     "/worldstate",
     "/sync",
     "/clear",
+    "/credits",
     "/quit",
     "/help",
 ];
@@ -886,6 +887,7 @@ fn handle_command(
                  /worldstate                         — Forzar actualización del worldstate\n\
                  /sync                               — Re-sincronizar la BD de items con WFCD\n\
                  /clear                              — Limpiar el historial de chat\n\
+                 /credits                            — Créditos y atribución a terceros\n\
                  /quit                               — Salir de la aplicación\n\
                  /help                               — Mostrar esta ayuda\n\
                  \n\
@@ -894,6 +896,33 @@ fn handle_command(
                  ↑/↓ — Historial de mensajes\n\
                  Ctrl+C — Salir"
             ));
+        }
+        "/credits" => {
+            state.messages.push(ChatEntry::cephalon(
+                "📄 **Créditos y atribución a terceros**\n\
+                 \n\
+                 **Warframe Fansite Kit** — Digital Extremes Ltd.\n\
+                 Assets visuales y audio: voces de Ordis, Lotus, Suda, Simaris, sprites HUD, logos.\n\
+                 Uso: fansites/comunidad no comercial. No redistribuir como propios.\n\
+                 Fuente: https://digitalextremesltd.app.box.com/s/vh2u41yhdlgp3girffucbynadoi33173\n\
+                 \n\
+                 **WFCD / warframe-items** — Base de datos de items (warframes, mods, armas, drops, polaridades, recetas).\n\
+                 https://github.com/WFCD/warframe-items\n\
+                 \n\
+                 **warframe.market** — Precios en tiempo real (órdenes online/ingame).\n\
+                 https://warframe.market / https://api.warframe.market\n\
+                 \n\
+                 **warframestat.us** — Worldstate en vivo (fissuras, alertas, sorties, invasiones).\n\
+                 https://api.warframestat.us\n\
+                 \n\
+                 **Ollama** — Inferencia local de modelos LLM.\n\
+                 https://ollama.com / https://github.com/ollama/ollama (MIT)\n\
+                 \n\
+                 Ver `THIRD_PARTY_NOTICES` en la raíz del repo para detalles completos.\n\
+                 \n\
+                 *Cephalon Mate es un proyecto de fans, no afiliado a Digital Extremes Ltd. ni Warframe.*"
+            ));
+            audio_player.play(AudioEvent::ToolExecuted { success: true });
         }
         "/quit" | "/exit" => {
             state.quit = true;

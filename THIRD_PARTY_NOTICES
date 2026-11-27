@@ -1,0 +1,73 @@
+THIRD-PARTY NOTICES — Cephalon Mate
+====================================
+
+Este proyecto utiliza los siguientes recursos de terceros:
+
+---
+
+### Warframe Fansite Kit
+**Titular:** Digital Extremes Ltd.
+**Fuente:** https://digitalextremesltd.app.box.com/s/vh2u41yhdlgp3girffucbynadoi33173
+**Uso:** Assets visuales (logos, sprites HUD, imágenes, concept art) y audio (voces de Cephalon Ordis, Lotus, Suda, Simaris, efectos de UI).
+**Licencia:** Warframe Fansite Kit — provisto por Digital Extremes para uso en fansites y proyectos comunitarios no comerciales.
+**Restricciones:** No redistribuir los assets como propios, no uso comercial, no modificar los archivos de audio originales sin permiso.
+**Archivos usados:** `Warframe Fansite Kit/Audio/`, `Warframe Fansite Kit/Logos/`, `Warframe Fansite Kit/Images/`, `Warframe Fansite Kit/Key Art/`, `Warframe Fansite Kit/Concept Art/`, `Warframe Fansite Kit/Content Creation/`, `Warframe Fansite Kit/Languages/`.
+**Nota:** El kit completo NO se distribuye con este repositorio (pesa ~1,7 GB). Cada usuario debe descargarlo desde la fuente oficial de Digital Extremes.
+
+---
+
+### WFCD / warframe-items
+**Proyecto:** WFCD (Warframe Community Data)
+**Repositorio:** https://github.com/WFCD/warframe-items
+**Uso:** Base de datos completa de items de Warframe (warframes, mods, armas, componentes, drops, polaridades, stats, recetas).
+**Licencia:** Datos de la API oficial de Warframe, mantenidos por la comunidad.
+**Uso en este proyecto:** Descarga por categorías (26 archivos JSON) → SQLite local (`data/cehalon_items.db`).
+**Atribución:** "Datos de items provistos por WFCD (https://github.com/WFCD/warframe-items)"
+
+---
+
+### warframe.market API
+**Servicio:** warframe.market
+**URL:** https://api.warframe.market
+**Uso:** Precios de compra/venta en tiempo real (órdenes visibles de usuarios online/ingame).
+**Licencia:** Términos de servicio de warframe.market.
+**Atribución:** "Precios provistos por warframe.market (https://warframe.market)"
+
+---
+
+### warframestat.us API
+**Servicio:** warframestat.us
+**URL:** https://api.warframestat.us
+**Uso:** Worldstate en vivo (fissuras, alertas, sorties, invasiones).
+**Licencia:** Términos de servicio de warframestat.us.
+**Atribución:** "Worldstate provisto por warframestat.us (https://api.warframestat.us)"
+
+---
+
+### Ollama
+**Proyecto:** Ollama
+**URL:** https://ollama.com
+**Repositorio:** https://github.com/ollama/ollama
+**Licencia:** MIT License
+**Uso:** Inferencia local de modelos LLM (qwen2.5, llama3.1, nomic-embed-text, cehalon-ordis/suda/simaris).
+
+---
+
+### Dependencias Rust (crates.io)
+Todas las dependencias listadas en `Cargo.toml` y `Cargo.lock` bajo sus respectivas licencias (MIT, Apache-2.0, BSD, etc.). Ver `Cargo.lock` para la lista completa.
+
+---
+
+### Fuentes del sistema
+El tema visual usa las siguientes familias de fuentes del sistema (fallback):
+- JetBrains Mono (monospace)
+- Cascadia Code (monospace)
+- Consolas (monospace)
+- Segoe UI (proportional)
+- Inter (proportional)
+- Roboto (proportional)
+
+---
+
+**Cephalon Mate** es un proyecto de fans, no afiliado a Digital Extremes Ltd. ni a Warframe.
+Warframe y todos los contenidos relacionados son propiedad de Digital Extremes Ltd.
