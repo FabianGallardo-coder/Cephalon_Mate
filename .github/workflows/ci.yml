@@ -5,6 +5,9 @@ on:
     branches: [main, master, Master]
   pull_request:
     branches: [main, master, Master]
+  schedule:
+    # QA exhaustivo diario (03:00 UTC) — gate duro para detectar cambios upstream
+    - cron: '0 3 * * *'
 
 jobs:
   build-test:
@@ -38,12 +41,21 @@ jobs:
           grep -q "Worldstate actualizado" smoke.log
           echo "✅ Smoke test passed"
 
-      # QA de datos: sincroniza WFCD y comprueba warframes/mods/drops.
-      # Es informativo (continue-on-error) porque depende de que GitHub/raw
-      # esté disponible; un corte de red no debe invalidar la release.
-      - name: QA de datos (WFCD)
+      # QA de datos en push/PR: informativo (continue-on-error: true).
+      # Depende de GitHub/raw.githubusercontent.com; un corte de red no debe
+      # bloquear la release. El gate duro corre en el scheduled diario.
+      - name: QA de datos (WFCD) — informativo
+        if: github.event_name != 'schedule'
         continue-on-error: true
         run: |
           ./target/release/cehalon-mate --qa --sync | tee qa.log
           grep -q "RESULTADO QA: ✅ PASS" qa.log
           echo "✅ QA de datos passed"
+
+      # QA de datos en scheduled: gate duro (falla el workflow si hay problemas).
+      - name: QA de datos (WFCD) — gate duro (scheduled)
+        if: github.event_name == 'schedule'
+        run: |
+          ./target/release/cehalon-mate --qa --sync | tee qa.log
+          grep -q "RESULTADO QA: ✅ PASS" qa.log
+          echo "✅ QA de datos passed (scheduled gate)"
