@@ -37,3 +37,13 @@ jobs:
           ./target/release/cehalon-mate --smoke | tee smoke.log
           grep -q "Worldstate actualizado" smoke.log
           echo "✅ Smoke test passed"
+
+      # QA de datos: sincroniza WFCD y comprueba warframes/mods/drops.
+      # Es informativo (continue-on-error) porque depende de que GitHub/raw
+      # esté disponible; un corte de red no debe invalidar la release.
+      - name: QA de datos (WFCD)
+        continue-on-error: true
+        run: |
+          ./target/release/cehalon-mate --qa --sync | tee qa.log
+          grep -q "RESULTADO QA: ✅ PASS" qa.log
+          echo "✅ QA de datos passed"

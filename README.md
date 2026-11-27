@@ -22,7 +22,7 @@ precios de warframe.market y consultas normales con la personalidad de tu choice
 TUI (ratatui)
  ├── cliente Ollama (Modelfile de personalidad + tools)
  ├── thread worldstate (api.warframestat.us, refresh 60s)
- ├── thread WFCD (descarga items.json → SQLite, con reintentos)
+ ├── thread WFCD (descarga JSON por categoría → SQLite, con reintentos)
  └── thread de audio (rodio, sonidos del Fansite Kit)
 ```
 
@@ -88,11 +88,54 @@ Atajos: `Tab` autocompleta comandos, `↑`/`↓` recorren el historial, `Ctrl+C`
 
 ### Flags de CLI
 
+| Flag | Qué hace |
+|---|---|
+| `--qa` | Ejecuta la batería de QA de datos WFCD. |
+| `--qa --sync` | Sincroniza la BD con WFCD y después ejecuta la batería de QA. |
+| `--tool <nombre> [json]` | Ejecuta una tool y muestra su salida cruda; útil para depurar. |
+| `--ask "<pregunta>"` | Pregunta al modelo en modo headless, sin TUI; es la vía de QA end-to-end. |
+| `--model <nombre>` | Sobrescribe el modelo de Ollama usado por `--ask` (p. ej. `cehalon-suda:latest`). |
+| `--version` | Muestra la versión. |
+| `--smoke` | Chequeo de arranque sin TUI (lo usa CI). |
+| `--help` | Muestra la ayuda. |
+
 ```bash
-cehalon-mate --version   # versión
-cehalon-mate --smoke     # chequeo de arranque sin TUI (lo usa CI)
-cehalon-mate --help
+cargo run -- --qa
+cargo run -- --qa --sync
+cargo run -- --tool donde_encontrar '{"nombre":"Serration"}'
+cargo run -- --ask "¿Dónde dropea Serration?"
 ```
+
+### Tools del asistente
+
+| Tool | Para qué sirve |
+|---|---|
+| `buscar_item` | Busca un item por nombre, con coincidencia exacta o difusa, y devuelve sus datos principales. |
+| `donde_encontrar` | **Tool principal de obtención:** fuentes de drop, polaridades, mods compatibles y receta de crafteo. |
+| `consultar_precio` | Consulta el precio de un item por su slug de warframe.market. |
+| `worldstate` | Devuelve el estado en vivo: fissuras, alertas, sortie e invasiones. |
+| `buscar_guia` | Stub declarado: la base de guías indexadas todavía no tiene implementación real. |
+
+**`donde_encontrar`** devuelve dónde dropea un mod o item —enemigos, relíquias y
+misiones, con su probabilidad—, las polaridades de un warframe, los mods
+compatibles con ese warframe según su polaridad y la receta de crafteo con los
+ingredientes expresados en nombres legibles.
+
+### Datos verificados y anti-alucinación
+
+Antes de responder, la app detecta la intención de la pregunta en
+`src/brain/intent.rs`. Si pide información de un item, drop, stats,
+polaridades o mods compatibles, ejecuta la tool correspondiente e inyecta al
+modelo su salida como bloque de **datos verificados de WFCD**.
+
+Los modelos de 3B no siempre llaman a las tools por su cuenta. Sin este
+prefetch, podían alucinar polaridades y recetas; con él, responden con los
+datos de la base local y distinguen lo verificado de su conocimiento general.
+
+Si el item no existe en el dataset —por ejemplo, **Hornet Prime**, que
+upstream WFCD ya no publica—, la app lo marca como `ITEM NO CATALOGADO` y
+exige que el modelo lo diga con honestidad en vez de inventar drops, stats o
+recetas.
 
 ## Audio
 
@@ -120,12 +163,38 @@ El audio corre en su propio thread (`mpsc`), así que nunca bloquea la UI.
 
 ## WFCD (base de datos de items)
 
-- Descarga `items.json` de la release *latest* de [WFCD/warframe-items](https://github.com/WFCD/warframe-items).
-- Corre en un thread aparte con **back-off exponencial**: 250 ms, 500 ms, 1 s, 2 s…
-  (5 intentos máximo). Si falla, la app sigue viva y reintenta con `/sync`.
-- La descarga se hace **sin** bloquear la BD: mientras baja el JSON, las tools siguen
-  respondiendo con los datos que ya hay en SQLite.
+Upstream [WFCD/warframe-items](https://github.com/WFCD/warframe-items) ya no
+publica un `items.json` agregado. La app descarga los JSON por categoría (26
+categorías) desde:
+
+```text
+https://raw.githubusercontent.com/WFCD/warframe-items/master/data/json/<Categoría>.json
+```
+
+- El sync corre en un thread aparte con **back-off exponencial**: 250 ms,
+  500 ms, 1 s, 2 s… (5 intentos máximo). Si falla, la app sigue viva y
+  reintenta con `/sync`.
+- La descarga se hace **sin** bloquear la BD: mientras bajan los JSON, las
+  tools siguen respondiendo con los datos que ya hay en SQLite.
 - Se guarda en `data/cehalon_items.db` (SQLite, ignorado por git).
+- El dataset sincronizado contiene 20.166 items; las fuentes de drop cubren
+  aproximadamente el 24 % de ellos.
+
+La BD incluye estas columnas nuevas, añadidas automáticamente al migrar una
+base de datos antigua:
+
+| Columna | Contenido |
+|---|---|
+| `drops` | Fuentes de drop de WFCD, con lugar, tipo, probabilidad y rareza. |
+| `polarities` | Polaridades de cada warframe. |
+| `stats` | Stats de combate resumidas. |
+| `abilities` | Habilidades del warframe. |
+| `passive` | Descripción de la pasiva. |
+| `market_cost` | Rango de precio orientativo publicado por WFCD. |
+
+WFCD expresa `chance` en fracción para enemigos (`0.22` = 22 %) y en
+porcentaje para relíquias (`8.6` = 8.6 %). La app normaliza ambos formatos a
+porcentaje, siempre en el rango 0-100 %.
 
 El worldstate también va en background: se refresca cada `worldstate_refresh_secs`
 (60 s por defecto) desde `api.warframestat.us`.
@@ -144,9 +213,49 @@ worldstate_refresh_secs = 60
 
 ## Pruebas
 
+Los tests unitarios se ejecutan con:
+
 ```bash
 cargo test
 ```
+
+### QA de datos WFCD
+
+```bash
+cargo run -- --qa
+cargo run -- --qa --sync
+```
+
+`--qa` comprueba el dataset local sin volver a descargarlo; `--qa --sync`
+sincroniza primero con WFCD y después ejecuta los mismos checks.
+
+| Check | Qué verifica |
+|---|---|
+| BD poblada | Que la base local contiene items. |
+| Cobertura de drops | Cuántos items tienen al menos una fuente de drop. |
+| Warframes | La información de 8 warframes de referencia: polaridades, stats y habilidades. |
+| Mods | La polaridad y las fuentes de drop de 7 mods de referencia. |
+| Mods compatibles | Que se listan mods compatibles con las polaridades de Rhino. |
+| Búsqueda difusa | Que una búsqueda parcial, como `soma`, devuelve resultados. |
+| Salida de `donde_encontrar` | Que la respuesta de la tool contiene los datos esperados. |
+| Parseo de drops | Que las fuentes de drop guardadas tienen una ubicación legible. |
+| Integridad con upstream | Que la BD local coincide con los JSON de WFCD. |
+| Probabilidades | Que todas las probabilidades están normalizadas entre 0 y 100 %. |
+| Item desconocido | Que un item ausente se marca como no catalogado y no se inventa. |
+| Prefetch por intención | Que la pregunta se encamina a la tool correcta. |
+
+### QA end-to-end con Ollama
+
+```bash
+pwsh -File scripts/qa_ollama.ps1
+pwsh -File scripts/qa_ollama.ps1 -Modelo "cehalon-suda:latest"
+```
+
+El script pregunta al modelo con Ollama real, ejecuta las tools por el flujo de
+la app y comprueba que la respuesta usa los datos de WFCD. Cada pregunta tiene
+textos que **deben** aparecer (datos reales) y textos que **no** deben aparecer
+(alucinaciones conocidas, como inventar una receta para un item que no está en
+el dataset). Requiere Ollama activo y el binario debug disponible.
 
 Los tests que necesitan red u Ollama están marcados con `#[ignore]`:
 
@@ -162,6 +271,8 @@ cargo test -- --ignored
 2. `cargo test --verbose`
 3. `cargo build --release`
 4. Smoke test: `cehalon-mate --smoke` debe imprimir `✅ Worldstate actualizado`
+5. Paso informativo de QA de datos: `cehalon-mate --qa --sync`.
+   Si falla por problemas de red, no bloquea el release.
 
 ## Documentación
 

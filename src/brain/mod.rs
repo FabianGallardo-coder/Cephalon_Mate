@@ -5,6 +5,8 @@ pub mod chat;
 #[allow(unused_imports)]
 pub mod client;
 #[allow(unused_imports)]
+pub mod intent;
+#[allow(unused_imports)]
 pub mod items;
 #[allow(unused_imports)]
 pub mod tools;

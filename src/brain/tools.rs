@@ -8,7 +8,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::brain::items::{get_item_by_name, search_items, format_item_for_llm, get_price, format_price_for_llm, ItemRow};
+use crate::brain::items::{
+    format_item_for_llm, format_where_to_find, get_item_by_name, get_items_db, get_price,
+    format_price_for_llm, mods_for_polarities, polarities_of, search_items, ItemRow,
+};
 use crate::brain::worldstate::{Fissure, Alert, Sortie, Invasion, WorldState};
 
 /// Definición de tool en el formato que espera `/api/chat`.
@@ -57,7 +60,6 @@ fn get_worldstate_cache() -> Option<WorldState> {
 
 /// Conexión a la BD de items: vive en `items` (la usan el sync en background
 /// y las tools).
-use crate::brain::items::get_items_db;
 pub fn all_tools() -> Vec<ToolDef> {
     vec![
         tool(
@@ -84,6 +86,28 @@ pub fn all_tools() -> Vec<ToolDef> {
                 "type": "object",
                 "properties": {
                     "nombre": { "type": "string", "description": "Nombre del item, p. ej. 'Soma Prime'" }
+                },
+                "required": ["nombre"]
+            }),
+        ),
+        tool(
+            "donde_encontrar",
+            "Dice DÓNDE CONSEGUIR un item: fuentes de drop (enemigos, misiones, relicias), \
+             polaridades compatibles, receta de crafteo y precio orientativo. Úsala siempre \
+             que pregunten 'dónde consigo', 'dónde dropea', 'de dónde sale', 'cómo farmear' \
+             o 'qué mods van en' un item o mod.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "nombre": {
+                        "type": "string",
+                        "description": "Nombre del item, mod o warframe, p. ej. 'Serration' o 'Rhino'"
+                    },
+                    "tipo": {
+                        "type": "string",
+                        "enum": ["item", "mod", "warframe"],
+                        "description": "Tipo de búsqueda; 'auto' lo deduce del nombre"
+                    }
                 },
                 "required": ["nombre"]
             }),
@@ -169,6 +193,43 @@ pub fn execute(name: &str, args: &serde_json::Value) -> String {
                 None => "ERROR: BD de items no inicializada".into(),
             }
         }
+        "donde_encontrar" => {
+            let nombre = args
+                .get("nombre")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if nombre.is_empty() {
+                return "ERROR: parámetro 'nombre' requerido".into();
+            }
+            let tipo = args.get("tipo").and_then(|v| v.as_str()).unwrap_or("auto");
+            match get_items_db() {
+                Some(arc) => {
+                    let conn = arc.lock().unwrap();
+                    let item = match get_item_by_name(&conn, nombre)
+                        .ok()
+                        .flatten()
+                        .or_else(|| search_items(&conn, nombre, 1).ok().and_then(|v| v.into_iter().next()))
+                    {
+                        Some(i) => i,
+                        None => {
+                            return format!(
+                                "No se encontró '{nombre}' en la base de datos de WFCD. \
+                                 Prueba con otro nombre o pide primero `buscar_item`."
+                            );
+                        }
+                    };
+                    // Si el tipo no viene (o viene "auto"), se deduce de la BD.
+                    let tipo = if tipo.is_empty() || tipo == "auto" {
+                        deduce_kind(&item)
+                    } else {
+                        tipo
+                    };
+                    format_where_to_find_answer(&conn, &item, tipo)
+                }
+                None => "ERROR: BD de items no inicializada".into(),
+            }
+        }
         "consultar_precio" => {
             let item = args.get("item")
                 .and_then(|v| v.as_str())
@@ -190,9 +251,132 @@ pub fn execute(name: &str, args: &serde_json::Value) -> String {
         "buscar_guia" => stub("buscar_guia", "Fase 2 (RAG indexado)", args),
         other => format!(
             "ERROR: la herramienta `{other}` no existe. Usa únicamente las herramientas \
-             disponibles: worldstate, buscar_item, consultar_precio, buscar_guia."
+             disponibles: worldstate, buscar_item, donde_encontrar, consultar_precio, buscar_guia."
         ),
     }
+}
+
+/// Deduce el tipo de un item (`mod`, `warframe`, `item`) desde su `type` de WFCD.
+fn deduce_kind(item: &ItemRow) -> &'static str {
+    let ty = item.item_type.clone().unwrap_or_default().to_lowercase();
+    if ty.contains("mod") {
+        "mod"
+    } else if ty.contains("warframe") {
+        "warframe"
+    } else {
+        "item"
+    }
+}
+
+/// Respuesta de la tool `donde_encontrar`.
+///
+/// Si el item es un warframe, añade los mods compatibles con sus polaridades
+/// (el "¿qué mods van en Rhino?" del Tenno).
+fn format_where_to_find_answer(conn: &rusqlite::Connection, item: &ItemRow, tipo: &str) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("# {} — dónde encontrarlo\n", item.name));
+
+    let is_warframe = tipo == "warframe"
+        || item
+            .item_type
+            .as_deref()
+            .map(|t| t.to_lowercase().contains("warframe"))
+            .unwrap_or(false);
+    let is_mod = tipo == "mod"
+        || item
+            .item_type
+            .as_deref()
+            .map(|t| t.to_lowercase().contains("mod"))
+            .unwrap_or(false);
+
+    if is_mod {
+        if let Some(ref p) = item.polarity {
+            if !p.is_empty() {
+                out.push_str(&format!("- Ranura de polaridad del mod: {p}\n"));
+            }
+        }
+        if let Some(ref r) = item.rarity {
+            if !r.is_empty() {
+                out.push_str(&format!("- Rareza del mod: {r}\n"));
+            }
+        }
+        if let Some(ref lvl) = item.mastery_req {
+            out.push_str(&format!("- Maestría requerida: {lvl}\n"));
+        }
+    }
+
+    if is_warframe {
+        let pols = polarities_of(item);
+        if !pols.is_empty() {
+            out.push_str(&format!(
+                "- Polaridades del warframe: {}\n",
+                pols.join(", ")
+            ));
+        }
+        if let Some(stats) = crate::brain::items::format_stats_for_llm(item) {
+            out.push_str(&format!("- Stats: {stats}\n"));
+        }
+        if let Some(abil) = crate::brain::items::format_abilities_for_llm(item) {
+            out.push_str(&format!("- Habilidades: {abil}\n"));
+        }
+        if let Some(ref p) = item.passive {
+            if !p.is_empty() {
+                out.push_str(&format!("- Pasiva: {p}\n"));
+            }
+        }
+    }
+
+    // Fuentes de drop + receta.
+    let has_drops = item
+        .drops
+        .as_deref()
+        .map(|d| !crate::brain::items::parse_drops(d).is_empty())
+        .unwrap_or(false);
+    if has_drops || !is_warframe {
+        out.push_str(&format_where_to_find(item));
+    } else if is_warframe {
+        // Un warframe no tiene "drops" de enemigo: se obtiene por crafteo,
+        // tienda del Duviri o eventos.
+        out.push_str(
+            "\n**Obtención:** no hay drops de enemigo; se consigue por crafteo (receta abajo), \
+             en la tienda del Duviri o en recompensas de evento.\n",
+        );
+    }
+
+    // Módulos de crafteo si los hay.
+    if let Some(ref ing) = item.ingredients {
+        if !ing.is_empty() && ing != "[]" {
+            match crate::brain::items::resolve_ingredients(conn, ing) {
+                Some(legible) => out.push_str(&format!("\n**Receta de crafteo:** {legible}\n")),
+                None => out.push_str(&format!("\n**Receta de crafteo:** {ing}\n")),
+            }
+        }
+    }
+
+    // Para warframes: mods compatibles por polaridad.
+    if is_warframe {
+        let pols = polarities_of(item);
+        if !pols.is_empty() {
+            match mods_for_polarities(conn, &pols, 12) {
+                Ok(mods) if !mods.is_empty() => {
+                    out.push_str("\n**Mods compatibles (por polaridad):**\n");
+                    for m in &mods {
+                        let pol = m.polarity.clone().unwrap_or_default();
+                        let rar = m.rarity.clone().unwrap_or_default();
+                        out.push_str(&format!("- {} ({pol}, {rar})\n", m.name));
+                    }
+                    out.push_str(
+                        "\n_Los mods con otra polaridad se pueden refitear en el Duviri \
+                         (refit Porzinian) o con el mod Enigma._\n",
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => out.push_str(&format!("\n(no se pudieron listar los mods compatibles: {e})\n")),
+            }
+        }
+    }
+
+    out
 }
 
 fn format_worldstate_real(
@@ -260,19 +444,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn four_tools_defined() {
+    fn all_tools_defined() {
         let tools = all_tools();
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 5);
         let names: Vec<&str> = tools.iter().map(|t| t.function.name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["worldstate", "buscar_item", "consultar_precio", "buscar_guia"]
+            vec![
+                "worldstate",
+                "buscar_item",
+                "donde_encontrar",
+                "consultar_precio",
+                "buscar_guia"
+            ]
         );
         for t in &tools {
             assert_eq!(t.kind, "function");
             assert!(!t.function.description.is_empty(), "falta desc de {}", t.function.name);
             assert!(t.function.parameters.get("type").is_some(), "schema sin type");
         }
+    }
+
+    #[test]
+    fn donde_encontrar_requires_name() {
+        let out = execute("donde_encontrar", &json!({}));
+        assert!(out.contains("'nombre' requerido"), "{out}");
     }
 
     #[test]

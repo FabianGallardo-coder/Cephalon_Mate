@@ -8,6 +8,7 @@ mod audio;
 mod brain;
 mod config;
 mod logo;
+mod qa;
 mod ui;
 
 use std::io;
@@ -80,6 +81,30 @@ fn main() -> io::Result<()> {
     if args.iter().any(|a| a == "--smoke") {
         return run_smoke();
     }
+    if args.iter().any(|a| a == "--qa") {
+        return run_qa_cli(args.iter().any(|a| a == "--sync"));
+    }
+    if let Some(pos) = args.iter().position(|a| a == "--tool") {
+        let name = args.get(pos + 1).cloned().unwrap_or_default();
+        let raw = args.get(pos + 2).cloned().unwrap_or_else(|| "{}".to_string());
+        return run_tool_cli(&name, &raw);
+    }
+    if let Some(pos) = args.iter().position(|a| a == "--ask") {
+        let question = args.get(pos + 1).cloned().unwrap_or_default();
+        if question.trim().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "falta la pregunta (ej: --ask \"¿Dónde dropea Serration?\")",
+            ));
+        }
+        // `--model <nombre>` sobrescribe el modelo de Ollama (QA E2E).
+        let model_override = args
+            .iter()
+            .position(|a| a == "--model")
+            .and_then(|p| args.get(p + 1))
+            .cloned();
+        return run_ask_cli(&question, model_override.as_deref());
+    }
 
     let cfg = config::Config::load(Path::new("config.toml")).map_err(|e| {
         io::Error::new(
@@ -150,7 +175,195 @@ fn print_help() {
     println!();
     println!("  --version    Muestra la versión y sale");
     println!("  --smoke      Chequeo de arranque sin TUI (para CI)");
+    println!("  --qa         QA de datos WFCD (warframes, mods, drops)");
+    println!("  --qa --sync  QA de datos + sincroniza WFCD antes de medir");
+    println!("  --tool <nombre> [json]  Ejecuta una tool y muestra su salida");
+    println!("  --ask <pregunta>         Pregunta al modelo (headless, sin TUI)");
+    println!("  --model <nombre>         Modelo de Ollama a usar con --ask");
     println!("  --help       Muestra esta ayuda");
+}
+
+/// Pregunta al modelo sin TUI y muestra la respuesta.
+///
+/// Usa exactamente el mismo flujo que la app (prefetch por intención +
+/// loop de tools), así que sirve como puerta de QA end-to-end.
+fn run_ask_cli(question: &str, model_override: Option<&str>) -> io::Result<()> {
+    let cfg = config::Config::load(Path::new("config.toml")).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("no se pudo cargar/crear config.toml: {e}"),
+        )
+    })?;
+
+    let ollama = OllamaClient::new(&cfg.ollama_host);
+    if ollama.health().is_err() {
+        eprintln!("[ask] Ollama no responde en {}", cfg.ollama_host);
+    }
+    let chat_model = match model_override {
+        Some(m) => m.to_string(),
+        None if ollama
+            .list_models()
+            .map(|ms| ms.iter().any(|m| m.starts_with(&format!("cehalon-{}:", cfg.personality))))
+            .unwrap_or(false) =>
+        {
+            format!("cehalon-{}", cfg.personality)
+        }
+        None => cfg.model.clone(),
+    };
+
+    let db = init_db().map_err(|e| {
+        io::Error::new(io::ErrorKind::Other, format!("inicializar BD: {e}"))
+    })?;
+    set_items_db(db);
+
+    let mut state = UiState::new(
+        cfg.personality.clone(),
+        cfg.model.clone(),
+        cfg.ollama_host.clone(),
+        ollama.health().is_ok(),
+    );
+
+    let rx = send_chat(
+        &mut state,
+        &ollama,
+        &chat_model,
+        question.to_string(),
+        None,
+    );
+
+    let mut answer = String::new();
+    for msg in rx {
+        match msg {
+            brain::StreamMsg::Token(t) => {
+                print!("{t}");
+                answer.push_str(&t);
+            }
+            brain::StreamMsg::Tool(label) => println!("\n[tool] {label}"),
+            brain::StreamMsg::Done => {
+                println!();
+                break;
+            }
+            brain::StreamMsg::Error(e) => {
+                eprintln!("\n[error] {e}");
+                return Err(io::Error::new(io::ErrorKind::Other, e));
+            }
+        }
+    }
+    if answer.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "el modelo no devolvió respuesta",
+        ));
+    }
+    Ok(())
+}
+
+/// Ejecuta una tool desde la línea de comandos e imprime su salida.
+///
+/// Es la puerta de QA/depuración: permite comprobar qué ve realmente el
+/// modelo (`--tool donde_encontrar '{"nombre":"Serration"}'`).
+fn run_tool_cli(name: &str, raw: &str) -> io::Result<()> {
+    if name.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "falta el nombre de la tool (ej: --tool buscar_item '{\"nombre\":\"Soma\"}')",
+        ));
+    }
+    let args: serde_json::Value = parse_tool_args(raw);
+
+    // La BD de items es necesaria para casi todas las tools.
+    let db = init_db().map_err(|e| {
+        io::Error::new(io::ErrorKind::Other, format!("inicializar BD: {e}"))
+    })?;
+    set_items_db(db);
+
+    let out = brain::tools::execute(name, &args);
+    println!("{out}");
+    Ok(())
+}
+
+/// Parsea los argumentos JSON de una tool.
+///
+/// Tolera el escapado de shell: PowerShell y cmd pasan `{\"nombre\":\"Soma\"}`
+/// con backslashes literales, y otros shells pueden quitar las comillas.
+/// Se prueban varias formas antes de rendirse.
+fn parse_tool_args(raw: &str) -> serde_json::Value {
+    let trimmed = raw.trim();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        return v;
+    }
+    // Backslashes de escapado de shell: {\"nombre\":\"Soma\"}
+    let unescaped = trimmed.replace("\\\"", "\"");
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&unescaped) {
+        return v;
+    }
+    // Comillas dobles perdidas: {nombre:Soma}
+    let loose = unescaped.replace('"', "'");
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&loose) {
+        return v;
+    }
+    if let Some(v) = parse_loose_pairs(&loose) {
+        return v;
+    }
+    serde_json::json!({ "_error": format!("JSON inválido: {trimmed}") })
+}
+
+/// Parsea pares `clave:valor` sin comillas: `{nombre:Soma,tipo:mod}`.
+///
+/// Último recurso para shells que se comen las comillas dobles.
+fn parse_loose_pairs(raw: &str) -> Option<serde_json::Value> {
+    let inner = raw.trim().strip_prefix('{')?.strip_suffix('}')?;
+    let mut map = serde_json::Map::new();
+    for part in inner.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (k, v) = part.split_once(':')?;
+        let key = k.trim().trim_matches('\'').trim_matches('"');
+        let val = v.trim().trim_matches('\'').trim_matches('"');
+        if key.is_empty() {
+            return None;
+        }
+        // Números como valor → número, no string.
+        let value = match val.parse::<i64>() {
+            Ok(n) => serde_json::Value::from(n),
+            Err(_) => serde_json::Value::String(val.to_string()),
+        };
+        map.insert(key.to_string(), value);
+    }
+    if map.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Object(map))
+    }
+}
+
+/// QA de datos: verifica warframes, mods y fuentes de drop contra la BD local.
+///
+/// Sale con código 1 si algún check falla (puerta usable en CI).
+fn run_qa_cli(sync_first: bool) -> io::Result<()> {
+    if sync_first {
+        println!("[qa] sincronizando WFCD…");
+        let db = init_db().map_err(|e| {
+            io::Error::new(io::ErrorKind::Other, format!("inicializar BD: {e}"))
+        })?;
+        match qa::sync_for_qa(&db) {
+            Ok(n) => println!("[qa] sync OK: {n} items"),
+            Err(e) => eprintln!("[qa] aviso: sync falló ({e}); se continúa con la BD actual"),
+        }
+    }
+
+    let (results, fails) = qa::run_qa(sync_first);
+    qa::print_report(&results, fails);
+
+    if fails > 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("QA falló: {fails} checks en rojo"),
+        ));
+    }
+    Ok(())
 }
 
 /// Chequeo de arranque sin TUI: carga config, abre la BD, renderiza la UI en
@@ -496,7 +709,7 @@ fn event_loop(
                                 ollama,
                                 chat_model,
                                 msg,
-                                &audio_player,
+                                Some(&audio_player),
                             ));
                         }
                         KeyCode::Up => history_up(&mut state),
@@ -898,7 +1111,7 @@ fn send_chat(
     ollama: &OllamaClient,
     chat_model: &str,
     msg: String,
-    audio_player: &AudioPlayer,
+    audio_player: Option<&AudioPlayer>,
 ) -> Receiver<StreamMsg> {
     state.messages.push(ChatEntry::you(msg.clone()));
     state.thinking = true;
@@ -906,14 +1119,17 @@ fn send_chat(
     state.tools_used.clear();
 
     // Audio: nuevo mensaje del usuario → Cephalon va a responder
-    audio_player.play(AudioEvent::CephalonMessage {
-        personality: state.personality_enum(),
-    });
-    // Audio: el NPC queda a la espera de la respuesta
-    audio_player.play(AudioEvent::NpcMessage {
-        npc: state.personality_enum().npc(),
-        kind: NpcMessageKind::Waiting,
-    });
+    // Audio: nuevo mensaje del usuario → Cephalon va a responder
+    if let Some(a) = audio_player {
+        a.play(AudioEvent::CephalonMessage {
+            personality: state.personality_enum(),
+        });
+        // Audio: el NPC queda a la espera de la respuesta
+        a.play(AudioEvent::NpcMessage {
+            npc: state.personality_enum().npc(),
+            kind: NpcMessageKind::Waiting,
+        });
+    }
 
     // Historial completo de la conversación para el modelo.
     let history: Vec<ChatMessage> = state
@@ -929,12 +1145,78 @@ fn send_chat(
     let (tx, rx) = mpsc::channel();
     let host = ollama.host().to_string();
     let model = chat_model.to_string();
-    let audio_for_thread = audio_player.clone();
+    let audio_for_thread = audio_player.cloned();
 
     thread::spawn(move || {
         let client = OllamaClient::new(host);
         let tools = brain::tools::all_tools();
         let mut messages = history;
+
+        // Prefetch: si la pregunta es sobre datos del juego (item, mod,
+        // warframe, drop), se ejecuta la tool ANTES de preguntar al modelo y
+        // se le inyectan los datos verificados. Así el modelo no alucina
+        // polaridades ni drops aunque no sepa llamar a las tools por su cuenta.
+        let last_user_text = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "user")
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        let intents = prefetch_intents(&messages);
+        let unknowns = prefetch_unknowns(&messages);
+        let asks_game_data = brain::intent::asks_game_data(&last_user_text);
+
+        let mut block = String::new();
+        for intent in &intents {
+            let output = brain::tools::execute(&intent.tool, &intent.args);
+            block.push_str(&format!(
+                "\n\n[DATOS VERIFICADOS — herramienta `{}`]\n{}\n\
+                 [Fin de los datos verificados. Usa EXCLUSIVAMENTE esta información: \
+                 cita cada fuente con su probabilidad tal como aparece, sin inventar ni \
+                 atribuir la polaridad al enemigo.]",
+                intent.tool, output
+            ));
+            // La UI muestra la tool en la línea verde (como si el modelo la
+            // hubiera pedido), para que el Tenno vea de dónde salen los datos.
+            let _ = tx.send(StreamMsg::Tool(intent.label.clone()));
+            if let Some(a) = &audio_for_thread {
+                a.play(AudioEvent::ToolExecuted { success: true });
+            }
+        }
+
+        // Items que el usuario menciona y que NO están en el dataset: se avisa
+        // explícitamente para que el modelo no invente drops ni recetas.
+        for unknown in &unknowns {
+            block.push_str(&format!(
+                "\n\n[ITEM NO CATALOGADO — \"{unknown}\"]: no hay datos de WFCD para este item.",
+            ));
+        }
+
+        // Guard anti-alucinación: solo si la pregunta pide datos del juego.
+        if asks_game_data {
+            block.push_str(
+                "\n\n[REGLAS DE RESPUESTA]\n\
+                 - Redacta tu respuesta en tu propio estilo, sin copiar estos bloques \
+                 literalmente: resume los datos verificados (máximo 10 líneas) y cita las \
+                 fuentes con su probabilidad tal como aparecen.\n\
+                 - Si la pregunta es por dónde conseguir algo, da como mínimo DOS fuentes \
+                 concretas: nombre exacto de la fuente + probabilidad (ej. \"Charger — 33 %\"). \
+                 No digas sólo \"en misiones\".\n\
+                 - No afirmes drops, polaridades, stats, precios, ingredientes ni recetas \
+                 que no aparezcan en los datos verificados.\n\
+                 - Para un item marcado como NO CATALOGADO, di con honestidad que ese \
+                 dato no está disponible (ejemplo: \"Ordis no tiene ese dato en su \
+                 memoria, Tenno\") y no lo inventes.",
+            );
+        }
+
+        if !block.is_empty() {
+            if let Some(last) = messages.last_mut() {
+                if last.role == "user" {
+                    last.content.push_str(&block);
+                }
+            }
+        }
 
         for _round in 0..MAX_TOOL_ROUNDS {
             let result = client.chat_stream(&model, &messages, Some(&tools), |token| {
@@ -963,7 +1245,9 @@ fn send_chat(
                 let _ = tx.send(StreamMsg::Tool(label));
 
                 // Audio: tool ejecutada
-                audio_for_thread.play(AudioEvent::ToolExecuted { success: true });
+                if let Some(a) = &audio_for_thread {
+                    a.play(AudioEvent::ToolExecuted { success: true });
+                }
 
                 let output = brain::tools::execute(&name, &call.function.arguments);
                 messages.push(ChatMessage::tool_result(&name, output));
@@ -977,6 +1261,54 @@ fn send_chat(
     });
 
     rx
+}
+
+/// Detecta las intenciones del último mensaje del usuario.
+///
+/// Devuelve las tools a ejecutar si la pregunta es claramente sobre datos del
+/// juego y hay items conocidos en la BD.
+fn prefetch_intents(messages: &[ChatMessage]) -> Vec<brain::intent::Intent> {
+    let Some(last_user) = messages.iter().rev().find(|m| m.role == "user") else {
+        return Vec::new();
+    };
+    let Some(arc) = brain::items::get_items_db() else {
+        return Vec::new();
+    };
+    // El lock se suelta antes de ejecutar las tools (que vuelven a tomarlo).
+    let intents = {
+        let conn = match arc.lock() {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        brain::intent::detect_all(&conn, &last_user.content)
+    };
+    intents
+}
+
+/// Detecta items mencionados por el usuario que **no** están en la BD.
+///
+/// Sirve para advertir al modelo de que ese item no existe en el dataset
+/// (y que no debe inventar datos sobre él).
+fn prefetch_unknowns(messages: &[ChatMessage]) -> Vec<String> {
+    let Some(last_user) = messages.iter().rev().find(|m| m.role == "user") else {
+        return Vec::new();
+    };
+    let Some(arc) = brain::items::get_items_db() else {
+        return Vec::new();
+    };
+    let unknowns = {
+        let conn = match arc.lock() {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        brain::intent::unknown_items(&conn, &last_user.content)
+    };
+    // Sólo tiene sentido avisar si la pregunta pide datos del juego.
+    if brain::intent::asks_game_data(&last_user.content) {
+        unknowns.into_iter().take(3).collect()
+    } else {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]
@@ -998,5 +1330,24 @@ mod tests {
     fn wfcd_messages_are_debuggable() {
         let msg = WfcdMsg::Progress { percent: 42 };
         assert!(format!("{msg:?}").contains("42"));
+    }
+
+    #[test]
+    fn tool_args_tolerate_shell_escaping() {
+        // JSON normal.
+        let v = parse_tool_args(r#"{"nombre":"Soma"}"#);
+        assert_eq!(v["nombre"], "Soma");
+
+        // PowerShell/cmd escapan las comillas con backslash.
+        let v = parse_tool_args(r#"{\"nombre\":\"Soma\"}"#);
+        assert_eq!(v["nombre"], "Soma");
+
+        // Shell que se come las comillas.
+        let v = parse_tool_args(r#"{nombre:Soma}"#);
+        assert_eq!(v["nombre"], "Soma");
+
+        // JSON inválido de verdad → error explícito, no panic.
+        let v = parse_tool_args("esto no es json");
+        assert!(v.get("_error").is_some());
     }
 }
